@@ -13,6 +13,8 @@ class LLMClient:
         self._client = AsyncOpenAI(
             api_key=settings.litellm_api_key,
             base_url=settings.litellm_base_url,
+            max_retries=2,
+            timeout=30.0,
         )
 
     async def chat(self, messages: list[dict], model: str = "qwen3.6") -> str:
