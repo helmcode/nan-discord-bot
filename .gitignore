@@ -1,0 +1,7 @@
+# Bot
+.env
+__pycache__/
+*.pyc
+vector_db/*.db
+vector_db/*.db-journal
+*.log

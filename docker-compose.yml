@@ -1,0 +1,12 @@
+services:
+  bot:
+    build: .
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./bot/docs/knowledge:/app/bot/docs/knowledge:ro
+      - vector_data:/app/vector_db
+
+volumes:
+  vector_data:
