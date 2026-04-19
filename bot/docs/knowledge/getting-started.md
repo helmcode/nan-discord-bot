@@ -42,7 +42,7 @@ Crea o edita `opencode.json` en tu proyecto:
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "litellm": {
+    "nan": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "NaN",
       "options": {
@@ -52,6 +52,7 @@ Crea o edita `opencode.json` en tu proyecto:
       "models": {
         "qwen3.6": {
           "name": "Qwen 3.6",
+          "contextWindow": 131072,
           "modalities": {
             "input": ["text", "image"],
             "output": ["text"]
@@ -59,6 +60,11 @@ Crea o edita `opencode.json` en tu proyecto:
         }
       }
     }
+  },
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 50000
   }
 }
 ```
