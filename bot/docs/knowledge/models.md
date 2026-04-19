@@ -161,7 +161,9 @@ print(len(embeddings[0]))  # 4096
 }
 ```
 
-Config para `~/.openclaw/openclaw.json`
+Config para `~/.openclaw/openclaw.json`.
+
+**Importante:** `maxTokens: 32768` en la definición del modelo es el máximo que soporta. `params.maxTokens: 16000` en el agente es lo que se envía por request. 16K es un buen balance: ~3K para reasoning + ~13K para contenido. Si dejas un valor muy bajo, el reasoning consume todo el espacio y el agente entra en loop.
 
 ---
 
