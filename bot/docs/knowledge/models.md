@@ -132,6 +132,37 @@ embeddings = [d.embedding for d in response.data]
 print(len(embeddings[0]))  # 4096
 ```
 
+#### OpenClaw config
+
+```json
+{
+  "models": {
+    "providers": {
+      "nan": {
+        "baseUrl": "https://api.nan.builders/v1",
+        "apiKey": "sk-...",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "qwen3-embedding",
+            "name": "Qwen3 Embedding",
+            "input": ["text"],
+            "dimensions": 4096
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": { "primary": "nan/qwen3-embedding" }
+    }
+  }
+}
+```
+
+Config para `~/.openclaw/openclaw.json`
+
 ---
 
 ## kokoro - Text-to-Speech

@@ -5,3 +5,4 @@ __pycache__/
 vector_db/*.db
 vector_db/*.db-journal
 *.log
+.opencode
