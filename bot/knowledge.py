@@ -195,8 +195,11 @@ async def load_documentation(store: SimpleVectorStore, docs_dir: Path) -> int:
 
     for md_file in sorted(docs_dir.glob("**/*.md")):
         logger.info("Loading documentation: %s", md_file.relative_to(docs_dir.parent))
+        source = md_file.name
+        # Remove old chunks for this file before adding new ones
+        store._chunks = [c for c in store._chunks if c.source != source]
         text = md_file.read_text(encoding="utf-8")
-        chunks = chunk_text(text, source=md_file.name)
+        chunks = chunk_text(text, source=source)
         for chunk in chunks:
             store.add(chunk)
             count += 1
