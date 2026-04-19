@@ -1,11 +1,44 @@
 """LiteLLM API integration for chat completions and embeddings."""
 
-import asyncio
+import time
 
 from openai import AsyncOpenAI
 
 from bot.config import settings, logger
 from bot.knowledge import DocumentChunk, SearchResult, SimpleVectorStore
+
+
+class CircuitBreaker:
+    """Simple circuit breaker to prevent cascading API failures."""
+
+    def __init__(self, failures_threshold: int = 5, reset_timeout: int = 60) -> None:
+        self._failures = 0
+        self._threshold = failures_threshold
+        self._reset_timeout = reset_timeout
+        self._last_failure = 0.0
+        self._state: str = "closed"  # closed, open, half-open
+
+    def can_call(self) -> bool:
+        if self._state == "closed":
+            return True
+        if self._state == "open":
+            if time.time() - self._last_failure > self._reset_timeout:
+                self._state = "half-open"
+                return True
+            return False
+        # half-open: allow one call to test
+        return True
+
+    def record_success(self) -> None:
+        self._failures = 0
+        self._state = "closed"
+
+    def record_failure(self) -> None:
+        self._failures += 1
+        self._last_failure = time.time()
+        if self._failures >= self._threshold:
+            self._state = "open"
+            logger.warning("Circuit breaker opened after %d failures", self._failures)
 
 
 class LLMClient:
@@ -26,16 +59,28 @@ class LLMClient:
             max_retries=0,
             timeout=180.0,
         )
+        self._circuit_breaker = CircuitBreaker(failures_threshold=5, reset_timeout=60)
 
     async def chat(self, messages: list[dict], model: str = "qwen3.6") -> str:
         """Send a chat completion request."""
-        response = await self._client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.7,
-            max_tokens=2048,
-        )
-        return response.choices[0].message.content or ""
+        if not self._circuit_breaker.can_call():
+            logger.error("Circuit breaker is open, rejecting chat request")
+            raise RuntimeError("API is temporarily unavailable. Please try again later.")
+
+        try:
+            response = await self._client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=2048,
+            )
+            self._circuit_breaker.record_success()
+            content = response.choices[0].message.content
+            return content if content else ""
+        except Exception as e:
+            self._circuit_breaker.record_failure()
+            logger.error("Chat completion failed: %s", type(e).__name__)
+            raise
 
     async def embed(self, text: str) -> list[float]:
         """Generate an embedding for a text."""
@@ -70,7 +115,7 @@ class LLMClient:
             try:
                 embeddings = await self.embed_many(texts)
             except Exception as e:
-                logger.error("Failed to embed batch %d: %s", i // batch_size, e)
+                logger.error("Failed to embed batch %d: %s", i // batch_size, type(e).__name__)
                 continue
 
             for chunk, embedding in zip(batch, embeddings):

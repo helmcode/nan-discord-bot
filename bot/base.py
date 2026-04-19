@@ -1,6 +1,9 @@
 """Main Discord bot implementation."""
 
+import asyncio
 import re
+import time
+from collections import defaultdict
 
 import discord
 from discord.ext import commands
@@ -8,6 +11,36 @@ from discord.ext import commands
 from bot.config import settings, logger
 from bot.knowledge import SimpleVectorStore
 from bot.llm import LLMClient
+
+
+# Rate limiting: max 3 mentions per user per 60-second window
+_RATE_LIMIT = 3
+_RATE_WINDOW = 60
+_user_rate_limits: dict[tuple[int, int], list[float]] = defaultdict(list)
+
+
+def _check_rate_limit(author_id: int, channel_id: int) -> bool:
+    """Check if a user has exceeded the rate limit. Returns True if allowed."""
+    now = time.time()
+    window = _user_rate_limits[(author_id, channel_id)]
+    window[:] = [t for t in window if now - t < _RATE_WINDOW]
+    if len(window) >= _RATE_LIMIT:
+        return False
+    window.append(now)
+    return True
+
+
+# Sanitize usernames to prevent prompt injection
+_SAFE_USERNAME_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+_MAX_USERNAME_LEN = 100
+
+
+def _sanitize_username(name: str) -> str:
+    """Sanitize a Discord username for safe inclusion in LLM prompts."""
+    if not name:
+        return ""
+    safe = _SAFE_USERNAME_RE.sub("", name)
+    return safe[:_MAX_USERNAME_LEN]
 
 
 class NanBot(commands.Bot):
@@ -26,6 +59,8 @@ class NanBot(commands.Bot):
         self.llm = LLMClient()
         self.store: SimpleVectorStore | None = None
         self._initialized = False
+        # Limit concurrent LLM calls to prevent overwhelming the API
+        self._llm_semaphore = asyncio.Semaphore(5)
 
     async def setup_hook(self) -> None:
         await self.tree.sync()
@@ -46,6 +81,9 @@ class NanBot(commands.Bot):
         if message.author == self.user:
             return
 
+        # Delegate to slash commands before processing auto-responses
+        await self.process_commands(message)
+
         channel_id = message.channel.id
         allowed = settings.allowed_channel_ids
 
@@ -60,9 +98,21 @@ class NanBot(commands.Bot):
         if not is_in_channel or not is_mentioned:
             return
 
+        # Rate limiting
+        if not _check_rate_limit(message.author.id, channel_id):
+            logger.warning("Rate limit exceeded for user %s in channel %s", message.author, channel_id)
+            try:
+                await message.reply("Demasiadas peticiones. Espera un momento e intenta de nuevo.", allowed_mentions=discord.AllowedMentions.none())
+            except discord.Forbidden:
+                pass
+            return
+
         content = re.sub(rf"<@!?{self.user.id}>\s*", "", message.content).strip()
         if not content:
             return
+
+        # Truncate to prevent overly expensive embedding/LLM calls
+        content = content[:1500]
 
         try:
             await message.channel.send(
@@ -77,28 +127,43 @@ class NanBot(commands.Bot):
             pass
 
         try:
-            query_vector = await self.llm.embed(content)
+            query_vector = await asyncio.wait_for(
+                self.llm.embed(content), timeout=15.0
+            )
             results = self.store.search(query_vector, top_k=settings.top_k) if self.store else []
+        except asyncio.TimeoutError:
+            logger.error("Embedding timed out")
+            results = []
         except Exception as e:
-            logger.error("Embedding failed: %s", e)
+            logger.error("Embedding failed: %s", type(e).__name__)
             results = []
 
         try:
-            answer = await self.llm.answer_with_context(
-                question=content,
-                context_chunks=results,
-                user_name=message.author.display_name,
-            )
+            async with self._llm_semaphore:
+                answer = await asyncio.wait_for(
+                    self.llm.answer_with_context(
+                        question=content,
+                        context_chunks=results,
+                        user_name=_sanitize_username(message.author.display_name),
+                    ),
+                    timeout=60.0,
+                )
+        except asyncio.TimeoutError:
+            logger.error("LLM response timed out")
+            answer = "La respuesta tardó demasiado. Intenta de nuevo."
         except Exception as e:
-            logger.error("LLM response failed: %s", e)
+            logger.error("LLM response failed: %s", type(e).__name__)
             answer = "Lo siento, hubo un error generando la respuesta. Intenta de nuevo o contacta a un admin."
 
         if len(answer) > 2000:
             answer = answer[:1997] + "..."
 
         try:
-            await message.reply(answer, allowed_mentions=discord.AllowedMentions.none())
-        except discord.Forbidden:
+            await asyncio.wait_for(
+                message.reply(answer, allowed_mentions=discord.AllowedMentions.none()),
+                timeout=10.0,
+            )
+        except (discord.Forbidden, asyncio.TimeoutError):
             pass
 
     @commands.command(name="health", description="Check bot health and knowledge base")
@@ -127,10 +192,16 @@ class NanBot(commands.Bot):
             return
 
         try:
-            query_vector = await self.llm.embed(query)
+            query_vector = await asyncio.wait_for(
+                self.llm.embed(query), timeout=15.0
+            )
             results = self.store.search(query_vector, top_k=3)
+        except asyncio.TimeoutError:
+            logger.error("Search timed out")
+            await ctx.send("La búsqueda tardó demasiado. Intenta de nuevo.")
+            return
         except Exception as e:
-            logger.error("Search failed: %s", e)
+            logger.error("Search failed: %s", type(e).__name__)
             await ctx.send("Error performing search.")
             return
 

@@ -15,6 +15,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -63,11 +65,14 @@ jobs:
             mkdir -p "$DEPLOY_DIR"
             cd "$DEPLOY_DIR"
 
-            # Pull latest code
-            git pull origin main
+            # Pull latest code (don't abort if git fails)
+            git pull origin main || echo "Warning: git pull failed, proceeding with existing code"
 
-            # Pull the new image from GHCR
-            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            # Pull the new image from GHCR (pinned to SHA)
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} || docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+            # Tag as latest for convenience
+            docker tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest 2>/dev/null || true
 
             # Deploy using the prod override (uses image instead of build)
             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-orphans

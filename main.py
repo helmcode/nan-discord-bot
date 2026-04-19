@@ -1,6 +1,7 @@
 """Entry point for the nan.discord.bot."""
 
 import asyncio
+import signal
 from pathlib import Path
 
 from bot.base import NanBot
@@ -21,7 +22,7 @@ async def init_knowledge_base(store: SimpleVectorStore) -> None:
         else:
             logger.info("No new chunks to embed")
     except Exception as e:
-        logger.error("Embedding init failed (bot will start without embeddings): %s", e)
+        logger.error("Embedding init failed (bot will start without embeddings): %s", type(e).__name__)
 
 
 async def main() -> None:
@@ -29,7 +30,54 @@ async def main() -> None:
     await init_knowledge_base(store)
     bot = NanBot()
     bot.store = store
-    await bot.start(settings.discord_token)
+
+    loop = asyncio.get_running_loop()
+    shutdown_event = asyncio.Event()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, shutdown_event.set)
+
+    shutdown_task = asyncio.create_task(shutdown_event.wait())
+
+    try:
+        await asyncio.gather(
+            bot.start(settings.discord_token),
+            shutdown_task,
+        )
+    except asyncio.CancelledError:
+        pass
+    finally:
+        logger.info("Shutting down...")
+        # Cancel background tasks
+        for task in asyncio.all_tasks():
+            task.cancel()
+        try:
+            await asyncio.gather(*asyncio.all_tasks(), return_exceptions=True)
+        except asyncio.CancelledError:
+            pass
+        # Save and close store
+        if store:
+            try:
+                store.save()
+            except Exception:
+                pass
+            try:
+                store.close()
+            except Exception:
+                pass
+        # Close LLM clients
+        if bot.llm:
+            try:
+                await bot.llm._client.close()
+                await bot.llm._embed_client.close()
+            except Exception:
+                pass
+        # Stop the bot
+        try:
+            await bot.close()
+        except Exception:
+            pass
+        logger.info("Shutdown complete")
 
 
 if __name__ == "__main__":

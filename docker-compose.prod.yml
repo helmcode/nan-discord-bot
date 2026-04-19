@@ -1,3 +1,17 @@
 services:
   bot:
     image: ghcr.io/helmcode/nan-discord-bot:latest
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./bot/docs/knowledge:/app/bot/docs/knowledge:ro
+      - vector_data:/app/vector_db
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+
+volumes:
+  vector_data:

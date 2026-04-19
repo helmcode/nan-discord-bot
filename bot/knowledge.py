@@ -165,7 +165,7 @@ def chunk_text(text: str, source: str, max_chars: int = 2000, overlap: int = 100
                 current_id += 1
                 # Overlap: keep last sentence
                 last_sentence_end = current_text.rfind(".")
-                if last_sentence_end > max_chars * 0.3:
+                if last_sentence_end > len(current_text) * 0.3:
                     current_text = current_text[last_sentence_end + 1:].strip()[:overlap]
                 else:
                     current_text = ""
@@ -193,7 +193,12 @@ async def load_documentation(store: SimpleVectorStore, docs_dir: Path) -> int:
         logger.warning("Docs directory not found: %s", docs_dir)
         return 0
 
+    docs_dir_resolved = docs_dir.resolve()
     for md_file in sorted(docs_dir.glob("**/*.md")):
+        resolved = md_file.resolve()
+        if not str(resolved).startswith(str(docs_dir_resolved / "")):
+            logger.warning("Skipping potentially malicious file: %s", md_file)
+            continue
         logger.info("Loading documentation: %s", md_file.relative_to(docs_dir.parent))
         source = md_file.name
         # Remove old chunks for this file before adding new ones
