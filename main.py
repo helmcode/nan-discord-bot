@@ -10,15 +10,18 @@ from bot.llm import LLMClient
 
 
 async def init_knowledge_base(store: SimpleVectorStore) -> None:
-    """Load docs and create embeddings."""
+    """Load docs and create embeddings. Non-fatal on failure."""
     llm = LLMClient()
     await load_documentation(store, DEFAULT_DOCS_DIR)
-    embedded = await llm.embed_chunks(store)
-    if embedded:
-        store.save()
-        logger.info("Created embeddings for %d chunks", embedded)
-    else:
-        logger.info("No new chunks to embed")
+    try:
+        embedded = await llm.embed_chunks(store)
+        if embedded:
+            store.save()
+            logger.info("Created embeddings for %d chunks", embedded)
+        else:
+            logger.info("No new chunks to embed")
+    except Exception as e:
+        logger.error("Embedding init failed (bot will start without embeddings): %s", e)
 
 
 async def main() -> None:

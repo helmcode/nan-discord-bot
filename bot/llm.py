@@ -1,5 +1,7 @@
 """LiteLLM API integration for chat completions and embeddings."""
 
+import asyncio
+
 from openai import AsyncOpenAI
 
 from bot.config import settings, logger
@@ -14,7 +16,15 @@ class LLMClient:
             api_key=settings.litellm_api_key,
             base_url=settings.litellm_base_url,
             max_retries=2,
-            timeout=30.0,
+            timeout=60.0,
+        )
+        # Separate client for embeddings: longer timeout, no retries
+        # (TEI on CPU can take 30-60s per inference)
+        self._embed_client = AsyncOpenAI(
+            api_key=settings.litellm_api_key,
+            base_url=settings.litellm_base_url,
+            max_retries=0,
+            timeout=180.0,
         )
 
     async def chat(self, messages: list[dict], model: str = "qwen3.6") -> str:
@@ -29,15 +39,15 @@ class LLMClient:
 
     async def embed(self, text: str) -> list[float]:
         """Generate an embedding for a text."""
-        response = await self._client.embeddings.create(
+        response = await self._embed_client.embeddings.create(
             model=settings.embedding_model,
             input=text,
         )
         return response.data[0].embedding
 
     async def embed_many(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings for multiple texts."""
-        results = await self._client.embeddings.create(
+        """Generate embeddings for multiple texts (max 32 per batch)."""
+        results = await self._embed_client.embeddings.create(
             model=settings.embedding_model,
             input=texts,
         )
@@ -51,19 +61,27 @@ class LLMClient:
         if not chunks_without_embedding:
             return 0
 
-        batch_size = 100
+        batch_size = 16
         embedded = 0
 
         for i in range(0, len(chunks_without_embedding), batch_size):
             batch = chunks_without_embedding[i:i + batch_size]
             texts = [c.text for c in batch]
-            embeddings = await self.embed_many(texts)
+            try:
+                embeddings = await self.embed_many(texts)
+            except Exception as e:
+                logger.error("Failed to embed batch %d: %s", i // batch_size, e)
+                continue
 
             for chunk, embedding in zip(batch, embeddings):
                 chunk.embedding = embedding
                 embedded += 1
 
             logger.info("Embedded %d/%d chunks", embedded, len(chunks_without_embedding))
+
+            # Wait between batches to avoid overwhelming TEI
+            if i + batch_size < len(chunks_without_embedding):
+                await asyncio.sleep(2)
 
         return embedded
 
