@@ -4,27 +4,45 @@ Todos los modelos se acceden por la misma API OpenAI-compatible con el mismo `ba
 
 ## OpenClaw - Configuración del cliente
 
-OpenClaw es un cliente de agente de IA que se conecta a la API de NaN. La API de NaN es 100% compatible con OpenAI, por lo que puedes configurarlo como un proveedor OpenAI-compatible.
+OpenClaw es un cliente de agente de IA. Se configura usando un archivo JSON en `~/.openclaw/openclaw.json`.
 
-### Pasos de configuración
+### Configurar provider NaN en OpenClaw
 
-1. Abre OpenClaw y ve a **Configuración → Providers/AI**
-2. Agrega o edita el proveedor con los siguientes valores:
-   - **Base URL:** `https://api.nan.builders/v1`
-   - **API Key:** tu API key personal (la que solicitaste al Staff)
-   - **Model:** `qwen3.6`
-3. Guarda la configuración
-
-Alternativamente, si OpenClaw permite variables de entorno, puedes configurar:
-
-```bash
-export OPENAI_BASE_URL="https://api.nan.builders/v1"
-export OPENAI_API_KEY="tu-api-key-personal"
+```json
+{
+  "models": {
+    "providers": {
+      "nan": {
+        "baseUrl": "https://api.nan.builders/v1",
+        "apiKey": "sk-...",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "qwen3.6",
+            "name": "Qwen 3.6",
+            "reasoning": true,
+            "input": ["text", "image"],
+            "contextWindow": 128000,
+            "maxTokens": 32768
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": { "primary": "nan/qwen3.6" },
+      "models": {
+        "nan/qwen3.6": {
+          "params": {
+            "maxTokens": 16000
+          }
+        }
+      }
+    }
+  }
+}
 ```
-
-### Configurar modelos en OpenClaw
-
-En `~/.openclaw/openclaw.json` puedes definir los modelos disponibles:
 
 - `maxTokens: 32768` en la definición del modelo es el máximo que soporta el modelo
 - `params.maxTokens: 16000` en el agente es lo que se envía por request
