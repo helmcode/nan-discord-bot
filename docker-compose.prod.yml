@@ -1,0 +1,3 @@
+services:
+  bot:
+    image: ghcr.io/helmcode/nan-discord-bot:latest
