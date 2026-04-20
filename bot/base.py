@@ -168,10 +168,10 @@ class NanBot(commands.Bot):
             logger.info("News channel not configured, skipping daily news task")
             return
 
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
 
         target_hour = settings.news_send_hour
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         next_run = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
         if next_run <= now:
             next_run += timedelta(days=1)
