@@ -1,9 +1,12 @@
 """Main Discord bot implementation."""
 
 import asyncio
+import json
 import re
 import time
 from collections import defaultdict
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 
 import discord
 from discord.ext import commands
@@ -11,6 +14,7 @@ from discord.ext import commands
 from bot.config import settings, logger
 from bot.knowledge import SimpleVectorStore
 from bot.llm import LLMClient
+from bot.news import fetch_rss_feeds, deduplicate, llm_select_top5, send_news_to_discord
 
 
 # Rate limiting: max 3 mentions per user per 60-second window
@@ -31,7 +35,7 @@ def _check_rate_limit(author_id: int, channel_id: int) -> bool:
 
 
 # Sanitize usernames to prevent prompt injection
-_SAFE_USERNAME_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+_SAFE_USERNAME_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b\u200c\u200d\u2060\ufeff\u202a\u202b\u202c\u202d\u202e\u202f]')
 _MAX_USERNAME_LEN = 100
 
 
@@ -40,6 +44,8 @@ def _sanitize_username(name: str) -> str:
     if not name:
         return ""
     safe = _SAFE_USERNAME_RE.sub("", name)
+    # Strip bidirectional override, zero-width, and other problematic Unicode
+    safe = re.sub(r'[\u00ad\u0300-\u036f\u1ab0-\u1aff\u1dc0-\u1dff]', '', safe)
     return safe[:_MAX_USERNAME_LEN]
 
 
@@ -59,15 +65,55 @@ class NanBot(commands.Bot):
         self.llm = LLMClient()
         self.store: SimpleVectorStore | None = None
         self._initialized = False
+        self._ready = False
         # Limit concurrent LLM calls to prevent overwhelming the API
         self._llm_semaphore = asyncio.Semaphore(5)
+        self._health_port = 9100
+        self._health_server: HTTPServer | None = None
+        self._health_thread: Thread | None = None
+
+    def _start_health_server(self) -> None:
+        """Start a lightweight HTTP health check server in a background thread."""
+
+        class HealthHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                if self.path == "/health":
+                    health_data = {
+                        "status": "healthy" if self.bot._ready else "starting",
+                        "initialized": self.bot._initialized,
+                        "store_chunks": len(self.bot.store.chunks) if self.bot.store else 0,
+                    }
+                    body = json.dumps(health_data).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, format: str, *args: object) -> None:
+                logger.debug("Health server: %s", format % args)
+
+        HealthHandler.bot = self
+
+        try:
+            self._health_server = HTTPServer(("0.0.0.0", self._health_port), HealthHandler)
+            self._health_thread = Thread(target=self._health_server.serve_forever, daemon=True)
+            self._health_thread.start()
+            logger.info("Health check server started on port %d", self._health_port)
+        except OSError as e:
+            logger.warning("Could not start health check server on port %d: %s", self._health_port, e)
 
     async def setup_hook(self) -> None:
         await self.tree.sync()
         logger.info("Synced %d commands", len(self.tree.get_commands()))
         self._initialized = True
+        self._start_health_server()
 
     async def on_ready(self) -> None:
+        self._ready = True
         logger.info("Bot ready: %s (ID: %s)", self.user, self.user.id)
         await self.change_presence(
             activity=discord.Activity(
@@ -75,6 +121,79 @@ class NanBot(commands.Bot):
                 name="/help | nan.builders",
             )
         )
+        await self.start_daily_news()
+
+    async def _fetch_and_send_news(self) -> None:
+        """Fetch AI news, select top 5, and send to Discord channel."""
+        logger.info("Fetching daily AI news...")
+        try:
+            articles = await fetch_rss_feeds()
+            logger.info("Fetched %d raw articles from RSS feeds", len(articles))
+
+            if not articles:
+                logger.warning("No articles fetched from RSS feeds")
+                return
+
+            unique_articles = deduplicate(articles)
+            logger.info("Deduplicated to %d unique articles", len(unique_articles))
+
+            top5_data = await llm_select_top5(unique_articles[:30], self.llm)
+            logger.info("LLM selected %d top articles", len(top5_data))
+
+            if settings.news_channel_id_value:
+                await send_news_to_discord(settings.news_channel_id_value, top5_data, self)
+                logger.info("Successfully sent daily news")
+        except Exception as e:
+            logger.error("Daily news task failed: %s", type(e).__name__, exc_info=True)
+
+    @commands.command(name="news", description="Manually trigger daily AI news fetch")
+    @commands.cooldown(1, 3600, commands.BucketType.default)
+    async def trigger_news(self, ctx: commands.Context) -> None:
+        """Manually trigger the news fetch (rate limited: 1 per hour)."""
+        if settings.news_channel_id_value is None:
+            await ctx.send("News channel not configured.")
+            return
+
+        await ctx.send("Fetching AI news... This may take a moment.")
+        await self._fetch_and_send_news()
+
+    @trigger_news.error
+    async def trigger_news_error(self, ctx: commands.Context, error) -> None:
+        if isinstance(error, commands.CommandOnCooldown):
+            await ctx.send(f"News fetch is on cooldown. Try again in {int(error.retry_after)} seconds.")
+
+    async def _schedule_daily_news(self) -> None:
+        """Schedule daily news to run at the configured hour."""
+        if settings.news_channel_id_value is None:
+            logger.info("News channel not configured, skipping daily news task")
+            return
+
+        from datetime import datetime, timedelta
+
+        target_hour = settings.news_send_hour
+        now = datetime.now()
+        next_run = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+
+        delay = (next_run - now).total_seconds()
+        logger.info("Daily news scheduled for %s (in %.1f hours)", next_run.strftime("%H:%M"), delay / 3600)
+
+        await asyncio.sleep(delay)
+        await self._fetch_and_send_news()
+
+        # Schedule next run (24 hours from now)
+        while True:
+            await asyncio.sleep(86400)
+            await self._fetch_and_send_news()
+
+    async def start_daily_news(self) -> None:
+        """Start the daily news scheduler as a background task."""
+        if settings.news_channel_id_value is not None:
+            asyncio.create_task(self._schedule_daily_news())
+            logger.info("Daily news scheduler started (first run at %d:00, channel %s)", settings.news_send_hour, settings.news_channel_id_value)
+        else:
+            logger.info("News channel not configured, skipping daily news task")
 
     async def on_message(self, message: discord.Message) -> None:
         """Process incoming messages for auto-responses."""
@@ -167,8 +286,9 @@ class NanBot(commands.Bot):
             pass
 
     @commands.command(name="health", description="Check bot health and knowledge base")
+    @commands.guild_only()
     async def health(self, ctx: commands.Context) -> None:
-        chunk_count = len(self.store._chunks) if self.store else 0
+        chunk_count = len(self.store.chunks) if self.store else 0
         embed = discord.Embed(title="Bot Health", color=discord.Color.green())
         embed.add_field(name="Status", value="Online", inline=True)
         embed.add_field(name="Knowledge Base", value=f"{chunk_count} chunks", inline=True)

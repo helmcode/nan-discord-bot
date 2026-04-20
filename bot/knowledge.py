@@ -48,6 +48,11 @@ class SimpleVectorStore:
         self._init_schema()
         self._load()
 
+    @property
+    def chunks(self) -> list[DocumentChunk]:
+        """Return a copy of all chunks for external access."""
+        return list(self._chunks)
+
     def _init_schema(self) -> None:
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS chunks (

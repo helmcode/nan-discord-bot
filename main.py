@@ -72,6 +72,12 @@ async def main() -> None:
                 await bot.llm._embed_client.close()
             except Exception:
                 pass
+        # Stop health check server
+        if hasattr(bot, '_health_server') and bot._health_server:
+            try:
+                bot._health_server.shutdown()
+            except Exception:
+                pass
         # Stop the bot
         try:
             await bot.close()

@@ -9,6 +9,7 @@ description = "Support bot for nan.builders Discord community"
 requires-python = ">=3.11"
 dependencies = [
     "discord.py>=2.3.2",
+    "feedparser>=6.0.0",
     "openai>=1.30.0",
     "pydantic-settings>=2.2.0",
 ]
