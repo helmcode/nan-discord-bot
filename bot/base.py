@@ -107,14 +107,13 @@ class NanBot(commands.Bot):
             logger.warning("Could not start health check server on port %d: %s", self._health_port, e)
 
     async def setup_hook(self) -> None:
-        await self.tree.sync()
-        logger.info("Synced %d commands", len(self.tree.get_commands()))
         self._initialized = True
         self._start_health_server()
 
     async def on_ready(self) -> None:
         self._ready = True
-        logger.info("Bot ready: %s (ID: %s)", self.user, self.user.id)
+        await self.tree.sync()
+        logger.info("Bot ready: %s (ID: %s), synced %d commands", self.user, self.user.id, len(self.tree.get_commands()))
         logger.info("News channel ID configured: %s", settings.news_channel_id_value)
         logger.info("News send hour: %s", settings.news_send_hour)
         await self.change_presence(
