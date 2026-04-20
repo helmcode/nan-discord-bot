@@ -115,6 +115,8 @@ class NanBot(commands.Bot):
     async def on_ready(self) -> None:
         self._ready = True
         logger.info("Bot ready: %s (ID: %s)", self.user, self.user.id)
+        logger.info("News channel ID configured: %s", settings.news_channel_id_value)
+        logger.info("News send hour: %s", settings.news_send_hour)
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
@@ -150,11 +152,17 @@ class NanBot(commands.Bot):
     @commands.cooldown(1, 3600, commands.BucketType.default)
     async def trigger_news(self, ctx: commands.Context) -> None:
         """Manually trigger the news fetch (rate limited: 1 per hour)."""
+        await self._fetch_and_send_news()
+        await ctx.send("Fetching AI news... This may take a moment.")
+
+    @commands.command(name="news-now", description="Immediately fetch and send AI news")
+    async def news_now(self, ctx: commands.Context) -> None:
+        """Immediately fetch and send AI news without waiting."""
         if settings.news_channel_id_value is None:
             await ctx.send("News channel not configured.")
             return
 
-        await ctx.send("Fetching AI news... This may take a moment.")
+        await ctx.send("Fetching AI news NOW... This may take a moment.")
         await self._fetch_and_send_news()
 
     @trigger_news.error
@@ -164,6 +172,7 @@ class NanBot(commands.Bot):
 
     async def _schedule_daily_news(self) -> None:
         """Schedule daily news to run at the configured hour."""
+        logger.info("_schedule_daily_news entered, channel=%s", settings.news_channel_id_value)
         if settings.news_channel_id_value is None:
             logger.info("News channel not configured, skipping daily news task")
             return
@@ -172,9 +181,12 @@ class NanBot(commands.Bot):
 
         target_hour = settings.news_send_hour
         now = datetime.now(timezone.utc)
+        logger.info("Target hour=%d, now=%s", target_hour, now)
         next_run = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+        logger.info("next_run=%s, now=%s, next_run<=now=%s", next_run, now, next_run <= now)
         if next_run <= now:
             next_run += timedelta(days=1)
+            logger.info("Scheduled for tomorrow: %s", next_run)
 
         delay = (next_run - now).total_seconds()
         logger.info("Daily news scheduled for %s (in %.1f hours)", next_run.strftime("%H:%M"), delay / 3600)
@@ -189,6 +201,7 @@ class NanBot(commands.Bot):
 
     async def start_daily_news(self) -> None:
         """Start the daily news scheduler as a background task."""
+        logger.info("start_daily_news called, news_channel_id_value=%s", settings.news_channel_id_value)
         if settings.news_channel_id_value is not None:
             asyncio.create_task(self._schedule_daily_news())
             logger.info("Daily news scheduler started (first run at %d:00, channel %s)", settings.news_send_hour, settings.news_channel_id_value)
