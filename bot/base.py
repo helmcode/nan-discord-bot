@@ -68,7 +68,7 @@ class NanBot(commands.Bot):
         self._ready = False
         # Limit concurrent LLM calls to prevent overwhelming the API
         self._llm_semaphore = asyncio.Semaphore(5)
-        self._health_port = 9100
+        self._health_port = 9101
         self._health_server: HTTPServer | None = None
         self._health_thread: Thread | None = None
 
