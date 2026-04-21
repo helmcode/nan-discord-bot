@@ -112,6 +112,14 @@ class NanBot(commands.Bot):
         self._initialized = True
         self._start_health_server()
 
+    async def setup_commands(self) -> None:
+        """Manually register commands defined as methods on this class."""
+        from discord.ext import commands as commands_ext
+
+        for name, method in self.__class__.__dict__.items():
+            if isinstance(method, commands_ext.Command):
+                self.add_command(method)
+
     async def on_ready(self) -> None:
         self._ready = True
         logger.info("Bot ready: %s (ID: %s)", self.user, self.user.id)

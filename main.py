@@ -30,6 +30,7 @@ async def main() -> None:
     await init_knowledge_base(store)
     bot = NanBot()
     bot.store = store
+    await bot.setup_commands()
 
     loop = asyncio.get_running_loop()
     shutdown_event = asyncio.Event()
