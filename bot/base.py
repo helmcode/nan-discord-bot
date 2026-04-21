@@ -156,6 +156,22 @@ class NanBot(commands.Bot):
         else:
             logger.info("Metrics channel or LiteLLM admin key not configured, skipping daily metrics")
 
+    @commands.command(name="metrics", description="Manually trigger token usage metrics report")
+    @commands.cooldown(1, 3600, commands.BucketType.default)
+    async def trigger_metrics(self, ctx: commands.Context) -> None:
+        """Manually trigger the metrics report (rate limited: 1 per hour)."""
+        if settings.status_channel_id_value is None or settings.litellm_admin_key is None:
+            await ctx.send("Metrics not configured.")
+            return
+
+        await ctx.send("Fetching LiteLLM token metrics... This may take a moment.")
+        await send_metrics_report(self)
+
+    @trigger_metrics.error
+    async def trigger_metrics_error(self, ctx: commands.Context, error) -> None:
+        if isinstance(error, commands.CommandOnCooldown):
+            await ctx.send(f"Metrics fetch is on cooldown. Try again in {int(error.retry_after)} seconds.")
+
     async def on_message(self, message: discord.Message) -> None:
         """Process incoming messages for auto-responses."""
         if message.author == self.user:
