@@ -107,26 +107,19 @@ class NanBot(commands.Bot):
             logger.warning("Could not start health check server on port %d: %s", self._health_port, e)
 
     async def setup_hook(self) -> None:
+        @self.tree.command(name="metrics", description="Manually trigger token usage metrics report")
+        @discord.app_commands.checks.cooldown(1, 3600)
+        async def metrics_command(interaction: discord.Interaction) -> None:
+            if settings.status_channel_id_value is None or settings.litellm_admin_key is None:
+                await interaction.response.send_message("Metrics not configured.")
+                return
+            await interaction.response.send_message("Fetching LiteLLM token metrics... This may take a moment.")
+            await send_metrics_report(self)
+
         await self.tree.sync()
         logger.info("Synced %d commands", len(self.tree.get_commands()))
         self._initialized = True
         self._start_health_server()
-        await self._register_commands_to_tree()
-
-    async def _register_commands_to_tree(self) -> None:
-        """Register commands defined as methods to the application command tree."""
-        from discord.ext import commands as commands_ext
-
-        for name, method in self.__class__.__dict__.items():
-            if isinstance(method, commands_ext.Command):
-                self.add_command(method)
-                # Add to tree as slash command
-                cmd = discord.app_commands.command(
-                    name=method.name,
-                    description=method.description or "",
-                )(method._callback)
-                self.tree.add_command(cmd)
-                logger.info("Registered command: %s", method.name)
 
     async def on_ready(self) -> None:
         self._ready = True
@@ -156,13 +149,16 @@ class NanBot(commands.Bot):
         delay = (next_run - now).total_seconds()
         logger.info("Daily metrics scheduled for %s (in %.1f hours)", next_run.strftime("%H:%M"), delay / 3600)
 
-        await asyncio.sleep(delay)
-        await send_metrics_report(self)
-
-        # Schedule next run (24 hours from now)
-        while True:
-            await asyncio.sleep(86400)
+        try:
+            await asyncio.sleep(delay)
             await send_metrics_report(self)
+
+            # Schedule next run (24 hours from now)
+            while True:
+                await asyncio.sleep(86400)
+                await send_metrics_report(self)
+        except asyncio.CancelledError:
+            logger.info("Daily metrics scheduler cancelled")
 
     async def start_daily_metrics(self) -> None:
         """Start the daily metrics scheduler as a background task."""
@@ -171,22 +167,6 @@ class NanBot(commands.Bot):
             logger.info("Daily metrics scheduler started (first run at %d:00, channel %s)", settings.metrics_send_hour, settings.status_channel_id_value)
         else:
             logger.info("Metrics channel or LiteLLM admin key not configured, skipping daily metrics")
-
-    @commands.command(name="metrics", description="Manually trigger token usage metrics report")
-    @commands.cooldown(1, 3600, commands.BucketType.default)
-    async def trigger_metrics(self, ctx: commands.Context) -> None:
-        """Manually trigger the metrics report (rate limited: 1 per hour)."""
-        if settings.status_channel_id_value is None or settings.litellm_admin_key is None:
-            await ctx.send("Metrics not configured.")
-            return
-
-        await ctx.send("Fetching LiteLLM token metrics... This may take a moment.")
-        await send_metrics_report(self)
-
-    @trigger_metrics.error
-    async def trigger_metrics_error(self, ctx: commands.Context, error) -> None:
-        if isinstance(error, commands.CommandOnCooldown):
-            await ctx.send(f"Metrics fetch is on cooldown. Try again in {int(error.retry_after)} seconds.")
 
     async def on_message(self, message: discord.Message) -> None:
         """Process incoming messages for auto-responses."""
