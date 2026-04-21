@@ -119,6 +119,7 @@ class NanBot(commands.Bot):
         for name, method in self.__class__.__dict__.items():
             if isinstance(method, commands_ext.Command):
                 self.add_command(method)
+                logger.info("Registered command: %s", method.name)
 
     async def on_ready(self) -> None:
         self._ready = True
