@@ -111,14 +111,21 @@ class NanBot(commands.Bot):
         logger.info("Synced %d commands", len(self.tree.get_commands()))
         self._initialized = True
         self._start_health_server()
+        await self._register_commands_to_tree()
 
-    async def setup_commands(self) -> None:
-        """Manually register commands defined as methods on this class."""
+    async def _register_commands_to_tree(self) -> None:
+        """Register commands defined as methods to the application command tree."""
         from discord.ext import commands as commands_ext
 
         for name, method in self.__class__.__dict__.items():
             if isinstance(method, commands_ext.Command):
                 self.add_command(method)
+                # Add to tree as slash command
+                cmd = discord.app_commands.command(
+                    name=method.name,
+                    description=method.description or "",
+                )(method._callback)
+                self.tree.add_command(cmd)
                 logger.info("Registered command: %s", method.name)
 
     async def on_ready(self) -> None:
