@@ -57,7 +57,10 @@ class NanBot(commands.Bot):
         intents.message_content = True
         intents.members = True
 
-        super().__init__(intents=intents)
+        super().__init__(
+            command_prefix="/",
+            intents=intents,
+        )
 
         self.llm = LLMClient()
         self.store: SimpleVectorStore | None = None
@@ -118,9 +121,6 @@ class NanBot(commands.Bot):
                 name="/help | nan.builders",
             )
         )
-        # Sync slash commands to Discord so they appear in the autocomplete dropdown
-        synced = await self.tree.sync()
-        logger.info("Synced %d commands, removed %d commands from tree", len(synced), len(synced))
         await self.start_daily_news()
 
     async def _fetch_and_send_news(self) -> None:
@@ -146,23 +146,27 @@ class NanBot(commands.Bot):
         except Exception as e:
             logger.error("Daily news task failed: %s", type(e).__name__, exc_info=True)
 
-    @discord.app_commands.command(name="news", description="Manually trigger daily AI news fetch")
+    @commands.command(name="news", description="Manually trigger daily AI news fetch")
     @commands.cooldown(1, 3600, commands.BucketType.default)
-    async def trigger_news(self, interaction: discord.Interaction) -> None:
+    async def trigger_news(self, ctx: commands.Context) -> None:
         """Manually trigger the news fetch (rate limited: 1 per hour)."""
-        await interaction.response.defer(ephemeral=True)
         await self._fetch_and_send_news()
-        await interaction.followup.send("Fetching AI news... This may take a moment.", ephemeral=True)
+        await ctx.send("Fetching AI news... This may take a moment.")
 
-    @discord.app_commands.command(name="news-now", description="Immediately fetch and send AI news")
-    async def news_now(self, interaction: discord.Interaction) -> None:
+    @commands.command(name="news-now", description="Immediately fetch and send AI news")
+    async def news_now(self, ctx: commands.Context) -> None:
         """Immediately fetch and send AI news without waiting."""
         if settings.news_channel_id_value is None:
-            await interaction.response.send_message("News channel not configured.", ephemeral=True)
+            await ctx.send("News channel not configured.")
             return
 
-        await interaction.response.send_message("Fetching AI news NOW... This may take a moment.", ephemeral=True)
+        await ctx.send("Fetching AI news NOW... This may take a moment.")
         await self._fetch_and_send_news()
+
+    @trigger_news.error
+    async def trigger_news_error(self, ctx: commands.Context, error) -> None:
+        if isinstance(error, commands.CommandOnCooldown):
+            await ctx.send(f"News fetch is on cooldown. Try again in {int(error.retry_after)} seconds.")
 
     async def _schedule_daily_news(self) -> None:
         """Schedule daily news to run at the configured hour."""
@@ -203,9 +207,12 @@ class NanBot(commands.Bot):
             logger.info("News channel not configured, skipping daily news task")
 
     async def on_message(self, message: discord.Message) -> None:
-        """Process incoming messages for auto-responses to @mentions."""
+        """Process incoming messages for auto-responses."""
         if message.author == self.user:
             return
+
+        # Delegate to slash commands before processing auto-responses
+        await self.process_commands(message)
 
         channel_id = message.channel.id
         allowed = settings.allowed_channel_ids
@@ -289,30 +296,30 @@ class NanBot(commands.Bot):
         except (discord.Forbidden, asyncio.TimeoutError):
             pass
 
-    @discord.app_commands.command(name="health", description="Check bot health and knowledge base")
-    async def health(self, interaction: discord.Interaction) -> None:
+    @commands.command(name="health", description="Check bot health and knowledge base")
+    @commands.guild_only()
+    async def health(self, ctx: commands.Context) -> None:
         chunk_count = len(self.store.chunks) if self.store else 0
         embed = discord.Embed(title="Bot Health", color=discord.Color.green())
         embed.add_field(name="Status", value="Online", inline=True)
         embed.add_field(name="Knowledge Base", value=f"{chunk_count} chunks", inline=True)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await ctx.send(embed=embed)
 
-    @discord.app_commands.command(name="docs", description="List available documentation files")
-    async def docs(self, interaction: discord.Interaction) -> None:
+    @commands.command(name="docs", description="List available documentation files")
+    async def docs(self, ctx: commands.Context) -> None:
         from bot.config import DOCS_DIR
         docs = list(DOCS_DIR.glob("**/*.md"))
         if not docs:
-            await interaction.response.send_message("No documentation files loaded yet.", ephemeral=True)
+            await ctx.send("No documentation files loaded yet.")
             return
         doc_list = "\n".join(f"- {d.name}" for d in docs)
         embed = discord.Embed(title="Documentation", description=doc_list, color=discord.Color.blue())
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await ctx.send(embed=embed)
 
-    @discord.app_commands.command(name="search", description="Search the knowledge base")
-    @discord.app_commands.describe(query="The query to search for")
-    async def search(self, interaction: discord.Interaction, query: str) -> None:
+    @commands.command(name="search", description="Search the knowledge base")
+    async def search(self, ctx: commands.Context, *, query: str) -> None:
         if not self.store:
-            await interaction.response.send_message("Knowledge base not initialized.", ephemeral=True)
+            await ctx.send("Knowledge base not initialized.")
             return
 
         try:
@@ -322,15 +329,15 @@ class NanBot(commands.Bot):
             results = self.store.search(query_vector, top_k=3)
         except asyncio.TimeoutError:
             logger.error("Search timed out")
-            await interaction.response.send_message("La búsqueda tardó demasiado. Intenta de nuevo.", ephemeral=True)
+            await ctx.send("La búsqueda tardó demasiado. Intenta de nuevo.")
             return
         except Exception as e:
             logger.error("Search failed: %s", type(e).__name__)
-            await interaction.response.send_message("Error performing search.", ephemeral=True)
+            await ctx.send("Error performing search.")
             return
 
         if not results:
-            await interaction.response.send_message("No results found for that query.", ephemeral=True)
+            await ctx.send("No results found for that query.")
             return
 
         parts = []
@@ -338,4 +345,4 @@ class NanBot(commands.Bot):
             preview = result.chunk.text[:200] + "..."
             parts.append(f"**[{result.chunk.source}]** (score: {result.score:.3f})\n{preview}")
 
-        await interaction.response.send_message("\n\n".join(parts), ephemeral=True)
+        await ctx.send("\n\n".join(parts))
