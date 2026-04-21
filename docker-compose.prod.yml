@@ -4,6 +4,7 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+    network_mode: host
     volumes:
       - ./bot/docs/knowledge:/app/bot/docs/knowledge:ro
       - vector_data:/app/vector_db
