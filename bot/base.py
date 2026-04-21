@@ -14,7 +14,7 @@ from discord.ext import commands
 from bot.config import settings, logger
 from bot.knowledge import SimpleVectorStore
 from bot.llm import LLMClient
-from bot.news import fetch_rss_feeds, deduplicate, llm_select_top5, send_news_to_discord
+from bot.metrics import send_metrics_report
 
 
 # Rate limiting: max 3 mentions per user per 60-second window
@@ -121,79 +121,40 @@ class NanBot(commands.Bot):
                 name="/help | nan.builders",
             )
         )
-        await self.start_daily_news()
+        await self.start_daily_metrics()
 
-    async def _fetch_and_send_news(self) -> None:
-        """Fetch AI news, select top 5, and send to Discord channel."""
-        logger.info("Fetching daily AI news...")
-        try:
-            articles = await fetch_rss_feeds()
-            logger.info("Fetched %d raw articles from RSS feeds", len(articles))
-
-            if not articles:
-                logger.warning("No articles fetched from RSS feeds")
-                return
-
-            unique_articles = deduplicate(articles)
-            logger.info("Deduplicated to %d unique articles", len(unique_articles))
-
-            top5_data = await llm_select_top5(unique_articles[:30], self.llm)
-            logger.info("LLM selected %d top articles", len(top5_data))
-
-            if settings.news_channel_id_value:
-                await send_news_to_discord(settings.news_channel_id_value, top5_data, self)
-                logger.info("Successfully sent daily news")
-        except Exception as e:
-            logger.error("Daily news task failed: %s", type(e).__name__, exc_info=True)
-
-    @commands.command(name="news", description="Manually trigger daily AI news fetch")
-    @commands.cooldown(1, 3600, commands.BucketType.default)
-    async def trigger_news(self, ctx: commands.Context) -> None:
-        """Manually trigger the news fetch (rate limited: 1 per hour)."""
-        if settings.news_channel_id_value is None:
-            await ctx.send("News channel not configured.")
+    async def _schedule_daily_metrics(self) -> None:
+        """Schedule daily metrics to run at the configured hour."""
+        if settings.status_channel_id_value is None or settings.litellm_admin_key is None:
+            logger.info("Metrics channel or LiteLLM admin key not configured, skipping daily metrics")
             return
 
-        await ctx.send("Fetching AI news... This may take a moment.")
-        await self._fetch_and_send_news()
+        from datetime import datetime, timedelta, timezone
 
-    @trigger_news.error
-    async def trigger_news_error(self, ctx: commands.Context, error) -> None:
-        if isinstance(error, commands.CommandOnCooldown):
-            await ctx.send(f"News fetch is on cooldown. Try again in {int(error.retry_after)} seconds.")
-
-    async def _schedule_daily_news(self) -> None:
-        """Schedule daily news to run at the configured hour."""
-        if settings.news_channel_id_value is None:
-            logger.info("News channel not configured, skipping daily news task")
-            return
-
-        from datetime import datetime, timedelta
-
-        target_hour = settings.news_send_hour
-        now = datetime.now()
+        target_hour = settings.metrics_send_hour
+        now = datetime.now(timezone.utc)
         next_run = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
         if next_run <= now:
             next_run += timedelta(days=1)
 
         delay = (next_run - now).total_seconds()
-        logger.info("Daily news scheduled for %s (in %.1f hours)", next_run.strftime("%H:%M"), delay / 3600)
+        logger.info("Daily metrics scheduled for %s (in %.1f hours)", next_run.strftime("%H:%M"), delay / 3600)
 
         await asyncio.sleep(delay)
-        await self._fetch_and_send_news()
+        await send_metrics_report(self)
 
         # Schedule next run (24 hours from now)
         while True:
             await asyncio.sleep(86400)
-            await self._fetch_and_send_news()
+            await send_metrics_report(self)
 
-    async def start_daily_news(self) -> None:
-        """Start the daily news scheduler as a background task."""
-        if settings.news_channel_id_value is not None:
-            asyncio.create_task(self._schedule_daily_news())
-            logger.info("Daily news scheduler started (first run at %d:00, channel %s)", settings.news_send_hour, settings.news_channel_id_value)
+    async def start_daily_metrics(self) -> None:
+        """Start the daily metrics scheduler as a background task."""
+        if settings.status_channel_id_value is not None and settings.litellm_admin_key:
+            asyncio.create_task(self._schedule_daily_metrics())
+            logger.info("Daily metrics scheduler started (first run at %d:00, channel %s)", settings.metrics_send_hour, settings.status_channel_id_value)
         else:
-            logger.info("News channel not configured, skipping daily news task")
+            logger.info("Metrics channel or LiteLLM admin key not configured, skipping daily metrics")
 
     async def on_message(self, message: discord.Message) -> None:
         """Process incoming messages for auto-responses."""

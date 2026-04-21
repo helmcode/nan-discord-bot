@@ -12,6 +12,8 @@ class Settings(BaseSettings):
 
     litellm_base_url: str = "https://api.nan.builders/v1"
     litellm_api_key: str
+    litellm_proxy_url: str = "http://localhost:4000"
+    litellm_admin_key: str = ""
 
     embedding_model: str = "qwen3-embedding"
     embedding_dim: int = 4096
@@ -21,6 +23,8 @@ class Settings(BaseSettings):
     allowed_channels: str = ""
     news_channel_id: str = ""
     news_send_hour: int = 9
+    status_channel_id: str = ""
+    metrics_send_hour: int = 9
     news_feeds: str = (
         "https://news.ycombinator.com/front,"
         "https://techcrunch.com/category/artificial-intelligence/feed/,"
@@ -60,6 +64,16 @@ class Settings(BaseSettings):
         if x and x.isdigit() and len(x) < 22:
             return int(x)
         logger.warning("Invalid NEWS_CHANNEL_ID: %r", self.news_channel_id)
+        return None
+
+    @property
+    def status_channel_id_value(self) -> int | None:
+        if not self.status_channel_id:
+            return None
+        x = self.status_channel_id.strip()
+        if x and x.isdigit() and len(x) < 22:
+            return int(x)
+        logger.warning("Invalid STATUS_CHANNEL_ID: %r", self.status_channel_id)
         return None
 
     @property
