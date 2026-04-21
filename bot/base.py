@@ -106,6 +106,14 @@ class NanBot(commands.Bot):
     async def setup_hook(self) -> None:
         self._initialized = True
         self._start_health_server()
+        # Register slash commands with the bot's command tree
+        # @discord.app_commands.command decorator creates Command objects
+        # but does NOT automatically add them to bot.tree
+        self.tree.add_command(self.trigger_news)
+        self.tree.add_command(self.news_now)
+        self.tree.add_command(self.health)
+        self.tree.add_command(self.docs)
+        self.tree.add_command(self.search)
 
     async def on_ready(self) -> None:
         self._ready = True
@@ -119,8 +127,10 @@ class NanBot(commands.Bot):
             )
         )
         # Sync slash commands to Discord so they appear in the autocomplete dropdown
-        synced = await self.tree.sync()
-        logger.info("Synced %d commands, removed %d commands from tree", len(synced), len(synced))
+        # Use guild-specific sync for instant visibility (global takes ~1 hour)
+        guild = discord.Object(id=settings.discord_guild_id) if settings.discord_guild_id else None
+        synced = await self.tree.sync(guild=guild)
+        logger.info("Synced %d slash commands to guild %s", len(synced), guild.id if guild else "global")
         await self.start_daily_news()
 
     async def _fetch_and_send_news(self) -> None:
