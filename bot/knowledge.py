@@ -5,6 +5,7 @@ Uses LiteLLM API for embeddings and stores vectors in SQLite with
 cosine similarity search in Python.
 """
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -62,6 +63,10 @@ class SimpleVectorStore:
                 embedding TEXT  -- JSON array of floats
             );
             CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source);
+            CREATE TABLE IF NOT EXISTS doc_hashes (
+                source TEXT PRIMARY KEY,
+                content_hash TEXT NOT NULL
+            );
         """)
 
     def _load_all(self) -> None:
@@ -86,6 +91,32 @@ class SimpleVectorStore:
         if count > 0:
             self._load_all()
             logger.info("Loaded %d chunks from SQLite", count)
+
+    def get_doc_hash(self, source: str) -> str | None:
+        """Get the stored content hash for a document source."""
+        cursor = self._conn.execute(
+            "SELECT content_hash FROM doc_hashes WHERE source = ?", (source,)
+        )
+        row = cursor.fetchone()
+        return row["content_hash"] if row else None
+
+    def set_doc_hash(self, source: str, content_hash: str) -> None:
+        """Store a content hash for a document source."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO doc_hashes (source, content_hash) VALUES (?, ?)",
+            (source, content_hash),
+        )
+
+    def remove_source(self, source: str) -> None:
+        """Remove all chunks and metadata for a source."""
+        self._chunks = [c for c in self._chunks if c.source != source]
+        self._conn.execute("DELETE FROM chunks WHERE source = ?", (source,))
+        self._conn.execute("DELETE FROM doc_hashes WHERE source = ?", (source,))
+
+    def get_tracked_sources(self) -> set[str]:
+        """Return all sources that have stored hashes."""
+        cursor = self._conn.execute("SELECT source FROM doc_hashes")
+        return {row["source"] for row in cursor}
 
     def save(self) -> None:
         """Persist chunks to SQLite (upsert)."""
@@ -188,31 +219,62 @@ def chunk_text(text: str, source: str, max_chars: int = 2000, overlap: int = 100
     return chunks
 
 
-async def load_documentation(store: SimpleVectorStore, docs_dir: Path) -> int:
+@dataclass
+class LoadResult:
+    """Result of loading documentation into the store."""
+    new_chunks: int
+    stale_removed: int
+
+
+async def load_documentation(store: SimpleVectorStore, docs_dir: Path) -> LoadResult:
     """
-    Load all markdown files from docs_dir into the vector store.
-    Returns number of chunks loaded.
+    Load markdown files from docs_dir into the vector store.
+    Uses content hashing to skip unchanged files and remove deleted ones.
+    Returns a LoadResult with counts of new chunks and removed stale sources.
     """
-    count = 0
     if not docs_dir.exists():
         logger.warning("Docs directory not found: %s", docs_dir)
-        return 0
+        return LoadResult(new_chunks=0, stale_removed=0)
 
     docs_dir_resolved = docs_dir.resolve()
+    current_sources: set[str] = set()
+    new_chunks = 0
+
     for md_file in sorted(docs_dir.glob("**/*.md")):
         resolved = md_file.resolve()
         if not str(resolved).startswith(str(docs_dir_resolved / "")):
             logger.warning("Skipping potentially malicious file: %s", md_file)
             continue
-        logger.info("Loading documentation: %s", md_file.relative_to(docs_dir.parent))
+
         source = md_file.name
-        # Remove old chunks for this file before adding new ones
-        store._chunks = [c for c in store._chunks if c.source != source]
+        current_sources.add(source)
         text = md_file.read_text(encoding="utf-8")
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+        stored_hash = store.get_doc_hash(source)
+        if stored_hash == content_hash:
+            logger.info("Unchanged, skipping: %s", source)
+            continue
+
+        logger.info("Changed (or new), re-indexing: %s", source)
+        store.remove_source(source)
         chunks = chunk_text(text, source=source)
         for chunk in chunks:
             store.add(chunk)
-            count += 1
+            new_chunks += 1
+        store.set_doc_hash(source, content_hash)
 
-    logger.info("Loaded %d chunks from %d files", count, len(list(docs_dir.glob("**/*.md"))))
-    return count
+    # Remove chunks for deleted files
+    stale_sources = store.get_tracked_sources() - current_sources
+    for source in stale_sources:
+        logger.info("File removed, cleaning up: %s", source)
+        store.remove_source(source)
+
+    if new_chunks:
+        logger.info("Re-indexed %d chunks from changed files", new_chunks)
+    elif stale_sources:
+        logger.info("Removed %d stale sources", len(stale_sources))
+    else:
+        logger.info("All %d docs unchanged, no re-indexing needed", len(current_sources))
+
+    return LoadResult(new_chunks=new_chunks, stale_removed=len(stale_sources))
