@@ -182,9 +182,10 @@ class NanBot(commands.Bot):
         is_in_channel = not allowed or channel_id in allowed
         is_mentioned = self.user.mentioned_in(message)
 
+        channel_name = message.channel.name if hasattr(message.channel, "name") else str(channel_id)
         logger.debug(
             "Message from %s in #%s (id=%s): allowed=%s mentioned=%s",
-            message.author, message.channel.name, channel_id, is_in_channel, is_mentioned,
+            message.author, channel_name, channel_id, is_in_channel, is_mentioned,
         )
 
         if not is_in_channel or not is_mentioned:

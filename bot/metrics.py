@@ -122,7 +122,14 @@ async def send_metrics_report(bot: Any) -> None:
     report = format_metrics_report(top10[:10], len(top10))
 
     try:
-        channel = await bot.fetch_channel(status_channel_id)
+        channel_id = int(status_channel_id)
+        channel = bot.get_channel(channel_id)
+        if channel is None:
+            logger.info("Channel %s not in cache, fetching from API...", status_channel_id)
+            channel = await bot.fetch_channel(channel_id)
+        if channel is None:
+            logger.error("Could not resolve channel %s", status_channel_id)
+            return
         await channel.send(report)
         logger.info("Metrics report sent to channel %s", status_channel_id)
     except Exception as e:
