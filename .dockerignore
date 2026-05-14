@@ -1,0 +1,16 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+.env
+.env.*
+*.egg-info
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+*.db
+vector_data/
+.opencode/
+*.md
+!README.md

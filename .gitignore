@@ -1,0 +1,32 @@
+# Bot
+vector_db/*.db
+vector_db/*.db-journal
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# OS
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+.opencode
+
+# Env (strict)
+.env
+.env.*
+!.env.example
