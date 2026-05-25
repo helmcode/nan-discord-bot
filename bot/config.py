@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     status_channel_id: str = ""
     metrics_send_hour: int = 9
 
+    docs_base_url: str = "https://nan.builders"
+    docs_refresh_interval: int = 900
+    docs_use_remote: str = "local"
+    docs_cache_dir: str = "vector_db/docs_cache"
+    docs_http_timeout: int = 10
+
     @property
     def allowed_channel_ids(self) -> set[int]:
         if not self.allowed_channels:

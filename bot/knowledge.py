@@ -285,3 +285,73 @@ async def load_documentation(store: SimpleVectorStore, docs_dir: Path) -> LoadRe
         logger.info("All %d docs unchanged, no re-indexing needed", len(current_sources))
 
     return LoadResult(new_chunks=new_chunks, stale_removed=len(stale_sources))
+
+
+async def load_documentation_from_remote(
+    store: SimpleVectorStore,
+    client: "DocsClient",
+    fallback_docs_dir: Path | None = None,
+) -> LoadResult:
+    from bot.docs_client import DocsClient  # noqa: F401
+
+    try:
+        manifest = await client.fetch_manifest()
+        source_of_truth = "remote"
+    except Exception as e:
+        logger.error("Failed to fetch manifest: %s", type(e).__name__)
+        cached = client.load_cached_manifest()
+        if cached is not None:
+            manifest = cached
+            source_of_truth = "cache"
+        elif fallback_docs_dir is not None:
+            logger.warning("No remote manifest and no cache; falling back to local docs")
+            return await load_documentation(store, fallback_docs_dir)
+        else:
+            logger.error("No remote manifest and no cache available")
+            return LoadResult(new_chunks=0, stale_removed=0)
+
+    current_sources: set[str] = set()
+    new_chunks = 0
+
+    for entry in manifest.entries:
+        source = f"{entry.slug}.md"
+        current_sources.add(source)
+
+        remote_hash = entry.content_hash.removeprefix("sha256:")
+        stored_hash = store.get_doc_hash(source)
+
+        if stored_hash == remote_hash:
+            logger.info("Unchanged (%s), skipping: %s", source_of_truth, source)
+            continue
+
+        try:
+            doc_body = await client.fetch_body(entry)
+        except Exception as e:
+            logger.warning("Failed to fetch %s from remote (%s), trying cache", source, type(e).__name__)
+            cached_body = client.load_cached_body(entry.slug)
+            if cached_body is None:
+                logger.error("No cached body for %s; skipping this iteration", source)
+                continue
+            doc_body = cached_body
+
+        logger.info("Changed (or new), re-indexing from %s: %s", source_of_truth, source)
+        store.remove_source(source)
+        chunks = chunk_text(doc_body.body, source=source)
+        for chunk in chunks:
+            store.add(chunk)
+            new_chunks += 1
+        store.set_doc_hash(source, doc_body.content_hash.removeprefix("sha256:"))
+
+    stale_sources = store.get_tracked_sources() - current_sources
+    for source in stale_sources:
+        logger.info("Source removed from manifest, cleaning up: %s", source)
+        store.remove_source(source)
+
+    if new_chunks:
+        logger.info("Re-indexed %d chunks from changed remote files", new_chunks)
+    elif stale_sources:
+        logger.info("Removed %d stale sources", len(stale_sources))
+    else:
+        logger.info("All %d remote docs unchanged, no re-indexing needed", len(current_sources))
+
+    return LoadResult(new_chunks=new_chunks, stale_removed=len(stale_sources))
