@@ -16,6 +16,25 @@ from typing import Self
 from bot.config import logger
 
 
+_FRONTMATTER_RE = re.compile(r"^---\s*\n.*?\n---\s*\n", re.DOTALL)
+
+
+def canonicalize_doc_text(raw: str, *, strip_frontmatter: bool) -> str:
+    """Single source of truth for the text that enters the chunker/hasher.
+
+    Normalises line endings to LF, optionally strips a leading YAML frontmatter
+    block, collapses 3+ consecutive newlines to 2, and trims surrounding
+    whitespace. Used in three places that must agree byte-for-byte:
+    local docs (strip_frontmatter=True), remote bodies (strip_frontmatter=False
+    on the happy path; True when reading legacy caches).
+    """
+    text = raw.replace("\r\n", "\n").replace("\r", "\n")
+    if strip_frontmatter:
+        text = _FRONTMATTER_RE.sub("", text, count=1)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 @dataclass
 class DocumentChunk:
     """A chunk of text with its embedding."""
@@ -45,7 +64,7 @@ class SimpleVectorStore:
         self._db_dir = db_dir
         self._db_dir.mkdir(parents=True, exist_ok=True)
         self._db_path = db_dir / "vectors.db"
-        self._conn = sqlite3.connect(str(self._db_path))
+        self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._chunks: list[DocumentChunk] = []
         self._init_schema()
@@ -68,6 +87,10 @@ class SimpleVectorStore:
             CREATE TABLE IF NOT EXISTS doc_hashes (
                 source TEXT PRIMARY KEY,
                 content_hash TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             );
         """)
 
@@ -119,6 +142,18 @@ class SimpleVectorStore:
         """Return all sources that have stored hashes."""
         cursor = self._conn.execute("SELECT source FROM doc_hashes")
         return {row["source"] for row in cursor}
+
+    def get_meta(self, key: str) -> str | None:
+        cursor = self._conn.execute("SELECT value FROM meta WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        self._conn.commit()
 
     def save(self) -> None:
         """Persist chunks to SQLite (upsert)."""
@@ -255,7 +290,8 @@ async def load_documentation(store: SimpleVectorStore, docs_dir: Path) -> LoadRe
 
         source = md_file.name
         current_sources.add(source)
-        text = md_file.read_text(encoding="utf-8")
+        raw = md_file.read_text(encoding="utf-8")
+        text = canonicalize_doc_text(raw, strip_frontmatter=True)
         content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
         stored_hash = store.get_doc_hash(source)
@@ -310,6 +346,14 @@ async def load_documentation_from_remote(
             logger.error("No remote manifest and no cache available")
             return LoadResult(new_chunks=0, stale_removed=0)
 
+    # Short-circuit when nothing changed upstream. Only meaningful when the
+    # manifest came from the remote (cache hits already imply we may have
+    # missed an update we couldn't fetch).
+    last_version = store.get_meta("docs_manifest_version")
+    if source_of_truth == "remote" and last_version == manifest.version:
+        logger.info("Manifest version unchanged (%s), skipping remote diff", manifest.version)
+        return LoadResult(new_chunks=0, stale_removed=0)
+
     current_sources: set[str] = set()
     new_chunks = 0
 
@@ -336,11 +380,12 @@ async def load_documentation_from_remote(
 
         logger.info("Changed (or new), re-indexing from %s: %s", source_of_truth, source)
         store.remove_source(source)
-        chunks = chunk_text(doc_body.body, source=source)
+        text = canonicalize_doc_text(doc_body.body, strip_frontmatter=False)
+        chunks = chunk_text(text, source=source)
         for chunk in chunks:
             store.add(chunk)
             new_chunks += 1
-        store.set_doc_hash(source, doc_body.content_hash.removeprefix("sha256:"))
+        store.set_doc_hash(source, hashlib.sha256(text.encode("utf-8")).hexdigest())
 
     stale_sources = store.get_tracked_sources() - current_sources
     for source in stale_sources:
@@ -353,5 +398,7 @@ async def load_documentation_from_remote(
         logger.info("Removed %d stale sources", len(stale_sources))
     else:
         logger.info("All %d remote docs unchanged, no re-indexing needed", len(current_sources))
+
+    store.set_meta("docs_manifest_version", manifest.version)
 
     return LoadResult(new_chunks=new_chunks, stale_removed=len(stale_sources))

@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -25,7 +26,7 @@ class Settings(BaseSettings):
 
     docs_base_url: str = "https://nan.builders"
     docs_refresh_interval: int = 900
-    docs_use_remote: str = "local"
+    docs_use_remote: Literal["local", "remote", "shadow"] = "local"
     docs_cache_dir: str = "vector_db/docs_cache"
     docs_http_timeout: int = 10
 

@@ -79,6 +79,7 @@ class NanBot(commands.Bot):
         self._docs_last_sync: str | None = None
         self._docs_last_sync_ok: bool = False
         self._docs_refresh_task: asyncio.Task[None] | None = None
+        self._docs_refresh_lock = asyncio.Lock()
 
     def _start_health_server(self) -> None:
         """Start a lightweight HTTP health check server in a background thread."""
@@ -167,23 +168,24 @@ class NanBot(commands.Bot):
         if self.store is None:
             return
 
-        try:
-            async with DocsClient() as client:
-                result = await load_documentation_from_remote(self.store, client)
+        async with self._docs_refresh_lock:
+            try:
+                async with DocsClient() as client:
+                    result = await load_documentation_from_remote(self.store, client)
 
-            if result.new_chunks:
-                embedded = await self.llm.embed_chunks(self.store)
-                self.store.save()
-                logger.info("Refresh: embedded %d new chunks", embedded)
-            elif result.stale_removed:
-                self.store.save()
+                if result.new_chunks:
+                    embedded = await self.llm.embed_chunks(self.store)
+                    self.store.save()
+                    logger.info("Refresh: embedded %d new chunks", embedded)
+                elif result.stale_removed:
+                    self.store.save()
 
-            self._docs_last_sync_ok = True
-        except Exception as e:
-            logger.error("Docs refresh failed: %s", type(e).__name__)
-            self._docs_last_sync_ok = False
-        finally:
-            self._docs_last_sync = datetime.now(UTC).isoformat()
+                self._docs_last_sync_ok = True
+            except Exception as e:
+                logger.error("Docs refresh failed: %s", type(e).__name__)
+                self._docs_last_sync_ok = False
+            finally:
+                self._docs_last_sync = datetime.now(UTC).isoformat()
 
     async def _schedule_docs_refresh(self) -> None:
         if settings.docs_use_remote == "local":

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from bot.base import NanBot
 from bot.config import DEFAULT_DOCS_DIR, logger, settings
-from bot.knowledge import SimpleVectorStore, load_documentation
+from bot.knowledge import SimpleVectorStore, canonicalize_doc_text, load_documentation
 from bot.llm import LLMClient
 
 
@@ -33,16 +33,30 @@ async def init_knowledge_base(store: SimpleVectorStore) -> None:
             async with DocsClient() as client:
                 manifest = await client.fetch_manifest()
 
+                # Compare on the same canonical text the chunker would see, so
+                # the diff is signal (real content divergence) not noise from
+                # frontmatter or line-ending differences.
                 local_hashes: dict[str, str] = {}
                 for md_file in sorted(DEFAULT_DOCS_DIR.glob("*.md")):
+                    local_text = canonicalize_doc_text(
+                        md_file.read_text(encoding="utf-8"),
+                        strip_frontmatter=True,
+                    )
                     local_hashes[md_file.stem] = hashlib.sha256(
-                        md_file.read_text(encoding="utf-8").encode("utf-8")
+                        local_text.encode("utf-8")
                     ).hexdigest()
 
-                remote_hashes = {
-                    entry.slug: entry.content_hash.removeprefix("sha256:")
-                    for entry in manifest.entries
-                }
+                remote_hashes: dict[str, str] = {}
+                for entry in manifest.entries:
+                    try:
+                        doc_body = await client.fetch_body(entry)
+                    except Exception as e:
+                        logger.warning("Shadow fetch failed for %s: %s", entry.slug, type(e).__name__)
+                        continue
+                    remote_text = canonicalize_doc_text(doc_body.body, strip_frontmatter=False)
+                    remote_hashes[entry.slug] = hashlib.sha256(
+                        remote_text.encode("utf-8")
+                    ).hexdigest()
 
                 only_local = sorted(set(local_hashes) - set(remote_hashes))
                 only_remote = sorted(set(remote_hashes) - set(local_hashes))
@@ -58,12 +72,6 @@ async def init_knowledge_base(store: SimpleVectorStore) -> None:
                     only_remote or "-",
                     changed or "-",
                 )
-
-                for entry in manifest.entries:
-                    try:
-                        await client.fetch_body(entry)
-                    except Exception as e:
-                        logger.warning("Shadow fetch failed for %s: %s", entry.slug, type(e).__name__)
         except Exception as e:
             logger.warning("Shadow mode remote comparison failed: %s", type(e).__name__)
     else:
