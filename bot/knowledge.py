@@ -11,10 +11,12 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from bot.config import logger
 
+if TYPE_CHECKING:
+    from bot.docs_client import DocsClient
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n.*?\n---\s*\n", re.DOTALL)
 

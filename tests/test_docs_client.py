@@ -7,10 +7,9 @@ from pathlib import Path
 import pytest
 
 from bot.docs_client import (
-    DocsClient,
-    Manifest,
-    ManifestEntry,
     _SAFE_SLUG_RE,
+    DocsClient,
+    ManifestEntry,
     _strip_frontmatter,
 )
 

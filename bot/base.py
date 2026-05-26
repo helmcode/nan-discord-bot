@@ -163,7 +163,7 @@ class NanBot(commands.Bot):
             logger.info("Docs refresh scheduler already running")
 
     async def _refresh_docs_once(self) -> None:
-        from datetime import datetime, UTC
+        from datetime import UTC, datetime
 
         if self.store is None:
             return

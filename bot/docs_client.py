@@ -13,7 +13,6 @@ import httpx
 from bot.config import logger, settings
 from bot.knowledge import canonicalize_doc_text
 
-
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _SAFE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _BACKOFF_SECONDS = (0.5, 1.0, 2.0)
@@ -142,7 +141,7 @@ class DocsClient:
     def resolve_content_url(self, content_url: str) -> str:
         return urljoin(f"{self._base_url}/", content_url.lstrip("/"))
 
-    async def __aenter__(self) -> "DocsClient":
+    async def __aenter__(self) -> DocsClient:
         transport = httpx.AsyncHTTPTransport(retries=3)
         self._client = httpx.AsyncClient(
             timeout=self._timeout,
