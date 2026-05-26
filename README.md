@@ -121,21 +121,28 @@ Auto-response is triggered when the bot is **mentioned** inside a channel listed
 | `EMBEDDING_DIM`      | no       | `4096`                           | Expected embedding dimensionality. Informational; not enforced at write time.                            |
 | `TOP_K`              | no       | `5`                              | Number of chunks returned by the vector search used to build the RAG context.                            |
 | `ALLOWED_CHANNELS`   | no       | `""` (all channels)              | Comma-separated Discord channel IDs the bot will respond in. Empty means every channel is allowed.       |
-| `STATUS_CHANNEL_ID`  | no       | `""` (disables daily report)     | Channel ID where the daily metrics report is posted. Required for the scheduler to run.                  |
-| `METRICS_SEND_HOUR`  | no       | `9`                              | UTC hour (0–23) at which the daily metrics report is posted.                                             |
+| `STATUS_CHANNEL_ID`     | no       | `""` (disables daily report)     | Channel ID where the daily metrics report is posted. Required for the scheduler to run.                  |
+| `METRICS_SEND_HOUR`     | no       | `9`                              | UTC hour (0–23) at which the daily metrics report is posted.                                             |
+| `DOCS_USE_REMOTE`       | no       | `local`                          | Source for docs: `local` (`bot/docs/knowledge/`), `remote` (web docs API), or `shadow` (local + warn on remote drift). |
+| `DOCS_BASE_URL`         | no       | `https://nan.builders`           | Base URL of the web that serves `/api/docs/manifest.json` and `/api/docs/{slug}.md`.                     |
+| `DOCS_REFRESH_INTERVAL` | no       | `900`                            | Seconds between docs syncs when `DOCS_USE_REMOTE` is not `local`. Aligned with the web `Cache-Control`.   |
+| `DOCS_CACHE_DIR`        | no       | `vector_db/docs_cache`           | Directory for the cached `manifest.json`, `etags.json`, and per-slug body files used for conditional GETs. |
+| `DOCS_HTTP_TIMEOUT`     | no       | `10`                             | Per-request HTTP timeout (seconds) for the docs client.                                                  |
 
 ## Knowledge base
 
-Markdown files in `bot/docs/knowledge/` are loaded at startup by `SimpleVectorStore`, chunked on paragraph boundaries (target ~2000 chars per chunk with overlap), embedded via the LiteLLM embeddings endpoint, and persisted to `vector_db/vectors.db`. A `doc_hashes` table stores a SHA-256 of each source file so unchanged files are skipped on subsequent boots; files that disappear from disk have their chunks evicted from the database.
+When `DOCS_USE_REMOTE=local` (the default), markdown files in `bot/docs/knowledge/` are loaded at startup by `SimpleVectorStore`, chunked on paragraph boundaries (target ~2000 chars per chunk with overlap), embedded via the LiteLLM embeddings endpoint, and persisted to `vector_db/vectors.db`. A `doc_hashes` table stores a SHA-256 of each canonical source so unchanged docs are skipped on subsequent boots; sources that disappear have their chunks evicted from the database.
 
-To update the corpus, edit or add `.md` files under `bot/docs/knowledge/` and restart the bot. Only files whose content hash changed will trigger new embedding API calls.
+To update the corpus in `local` mode, edit or add `.md` files under `bot/docs/knowledge/` and restart the bot. Only sources whose content hash changed will trigger new embedding API calls.
+
+When `DOCS_USE_REMOTE=remote`, the corpus is pulled from `<DOCS_BASE_URL>/api/docs/manifest.json` instead and refreshed every `DOCS_REFRESH_INTERVAL` seconds (post-ready, in the background). The client honours `If-None-Match`/304 against `DOCS_CACHE_DIR` and short-circuits the entire sync when the manifest `version` (a hash over `[(slug, contentHash)]`) matches the value persisted in the SQLite `meta` table. `shadow` mode runs the local indexer but also fetches the remote bodies and logs any divergence between local and remote canonical hashes — useful while migrating to `remote`.
 
 ## Development
 
 - Lint: `ruff check .`
 - Format: `ruff format .`
 - Ruff is configured in `pyproject.toml` (`line-length = 120`, `target-version = "py311"`, rules `E, F, I, N, W, UP`).
-- There is currently no test suite. The `dev` extra installs `pytest` and `pytest-asyncio`, and `pyproject.toml` already configures `asyncio_mode = "auto"` for when tests are added.
+- Tests: `pytest` (full suite). The `dev` extra installs `pytest`, `pytest-asyncio`, and `pytest-httpx`. Tests live under `tests/` and mirror the `bot/` package layout. Mock `httpx` responses with `pytest-httpx`; do not hit live services. See `CONTRIBUTING.md` for the full testing policy.
 
 ## Deployment
 
