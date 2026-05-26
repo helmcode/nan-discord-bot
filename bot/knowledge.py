@@ -19,6 +19,7 @@ from bot.config import logger
 @dataclass
 class DocumentChunk:
     """A chunk of text with its embedding."""
+
     id: str
     text: str
     source: str  # original file name
@@ -28,6 +29,7 @@ class DocumentChunk:
 @dataclass
 class SearchResult:
     """Result from a similarity search."""
+
     chunk: DocumentChunk
     score: float
 
@@ -77,12 +79,14 @@ class SimpleVectorStore:
             embedding: list[float] | None = None
             if row["embedding"]:
                 embedding = json.loads(row["embedding"])
-            self._chunks.append(DocumentChunk(
-                id=row["id"],
-                text=row["text"],
-                source=row["source"],
-                embedding=embedding,
-            ))
+            self._chunks.append(
+                DocumentChunk(
+                    id=row["id"],
+                    text=row["text"],
+                    source=row["source"],
+                    embedding=embedding,
+                )
+            )
 
     def _load(self) -> None:
         """Check if DB has data and load it."""
@@ -94,9 +98,7 @@ class SimpleVectorStore:
 
     def get_doc_hash(self, source: str) -> str | None:
         """Get the stored content hash for a document source."""
-        cursor = self._conn.execute(
-            "SELECT content_hash FROM doc_hashes WHERE source = ?", (source,)
-        )
+        cursor = self._conn.execute("SELECT content_hash FROM doc_hashes WHERE source = ?", (source,))
         row = cursor.fetchone()
         return row["content_hash"] if row else None
 
@@ -192,29 +194,33 @@ def chunk_text(text: str, source: str, max_chars: int = 2000, overlap: int = 100
 
         if len(current_text) + len(para) > max_chars:
             if current_text:
-                chunks.append(DocumentChunk(
-                    id=f"{source}#{current_id}",
-                    text=current_text,
-                    source=source,
-                    embedding=None,
-                ))
+                chunks.append(
+                    DocumentChunk(
+                        id=f"{source}#{current_id}",
+                        text=current_text,
+                        source=source,
+                        embedding=None,
+                    )
+                )
                 current_id += 1
                 # Overlap: keep last sentence
                 last_sentence_end = current_text.rfind(".")
                 if last_sentence_end > len(current_text) * 0.3:
-                    current_text = current_text[last_sentence_end + 1:].strip()[:overlap]
+                    current_text = current_text[last_sentence_end + 1 :].strip()[:overlap]
                 else:
                     current_text = ""
 
         current_text = f"{current_text}\n\n{para}" if current_text else para
 
     if current_text:
-        chunks.append(DocumentChunk(
-            id=f"{source}#{current_id}",
-            text=current_text,
-            source=source,
-            embedding=None,
-        ))
+        chunks.append(
+            DocumentChunk(
+                id=f"{source}#{current_id}",
+                text=current_text,
+                source=source,
+                embedding=None,
+            )
+        )
 
     return chunks
 
@@ -222,6 +228,7 @@ def chunk_text(text: str, source: str, max_chars: int = 2000, overlap: int = 100
 @dataclass
 class LoadResult:
     """Result of loading documentation into the store."""
+
     new_chunks: int
     stale_removed: int
 

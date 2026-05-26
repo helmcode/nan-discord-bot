@@ -80,11 +80,13 @@ async def fetch_token_metrics(session: aiohttp.ClientSession, alias: str | None 
 
     result = []
     for log_alias, stats in alias_totals.items():
-        result.append({
-            "alias": log_alias,
-            "total_tokens": stats["total_tokens"],
-            "requests": stats["requests"],
-        })
+        result.append(
+            {
+                "alias": log_alias,
+                "total_tokens": stats["total_tokens"],
+                "requests": stats["requests"],
+            }
+        )
 
     result.sort(key=lambda x: x["total_tokens"], reverse=True)
     return result
@@ -141,11 +143,13 @@ async def fetch_user_model_breakdown(session: aiohttp.ClientSession, alias: str)
 
     result = []
     for model, stats in model_totals.items():
-        result.append({
-            "model": model,
-            "total_tokens": stats["total_tokens"],
-            "requests": stats["requests"],
-        })
+        result.append(
+            {
+                "model": model,
+                "total_tokens": stats["total_tokens"],
+                "requests": stats["requests"],
+            }
+        )
 
     result.sort(key=lambda x: x["total_tokens"], reverse=True)
     return result

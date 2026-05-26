@@ -104,9 +104,7 @@ class LLMClient:
 
     async def embed_chunks(self, store: SimpleVectorStore) -> int:
         """Embed all chunks in the store that don't have embeddings yet."""
-        chunks_without_embedding = [
-            chunk for chunk in store.chunks if not chunk.embedding
-        ]
+        chunks_without_embedding = [chunk for chunk in store.chunks if not chunk.embedding]
         if not chunks_without_embedding:
             return 0
 
@@ -114,7 +112,7 @@ class LLMClient:
         embedded = 0
 
         for i in range(0, len(chunks_without_embedding), batch_size):
-            batch = chunks_without_embedding[i:i + batch_size]
+            batch = chunks_without_embedding[i : i + batch_size]
             texts = [c.text for c in batch]
             try:
                 embeddings = await self.embed_many(texts)
@@ -157,9 +155,7 @@ class LLMClient:
         else:
             context_parts = []
             for i, result in enumerate(context_chunks, 1):
-                context_parts.append(
-                    f"[Document {i} - {result.chunk.source}]\n{result.chunk.text}\n"
-                )
+                context_parts.append(f"[Document {i} - {result.chunk.source}]\n{result.chunk.text}\n")
             context = "\n---\n".join(context_parts)
 
             system_prompt = (
@@ -190,14 +186,18 @@ class LLMClient:
         )
 
         if user_name:
-            messages.append({
-                "role": "user",
-                "content": f"{user_name} asks:\n---\n{question}\n---\n\n{injection_guard}",
-            })
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"{user_name} asks:\n---\n{question}\n---\n\n{injection_guard}",
+                }
+            )
         else:
-            messages.append({
-                "role": "user",
-                "content": f"---\n{question}\n---\n\n{injection_guard}",
-            })
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"---\n{question}\n---\n\n{injection_guard}",
+                }
+            )
 
         return await self.chat(messages)

@@ -49,7 +49,7 @@ def _sanitize_username(name: str) -> str:
         return ""
     safe = _SAFE_USERNAME_RE.sub("", name)
     # Strip bidirectional override, zero-width, and other problematic Unicode
-    safe = re.sub(r'[\u00ad\u0300-\u036f\u1ab0-\u1aff\u1dc0-\u1dff]', '', safe)
+    safe = re.sub(r"[\u00ad\u0300-\u036f\u1ab0-\u1aff\u1dc0-\u1dff]", "", safe)
     return safe[:_MAX_USERNAME_LEN]
 
 
@@ -207,7 +207,11 @@ class NanBot(commands.Bot):
         channel_name = message.channel.name if hasattr(message.channel, "name") else str(channel_id)
         logger.debug(
             "Message from %s in #%s (id=%s): allowed=%s mentioned=%s",
-            message.author, channel_name, channel_id, is_in_channel, is_mentioned,
+            message.author,
+            channel_name,
+            channel_id,
+            is_in_channel,
+            is_mentioned,
         )
 
         if not is_in_channel or not is_mentioned:
@@ -245,9 +249,7 @@ class NanBot(commands.Bot):
             pass
 
         try:
-            query_vector = await asyncio.wait_for(
-                self.llm.embed(content), timeout=15.0
-            )
+            query_vector = await asyncio.wait_for(self.llm.embed(content), timeout=15.0)
             results = self.store.search(query_vector, top_k=settings.top_k) if self.store else []
         except TimeoutError:
             logger.error("Embedding timed out")
@@ -296,6 +298,7 @@ class NanBot(commands.Bot):
     @commands.command(name="docs", description="List available documentation files")
     async def docs(self, ctx: commands.Context) -> None:
         from bot.config import DOCS_DIR
+
         docs = list(DOCS_DIR.glob("**/*.md"))
         if not docs:
             await ctx.send("No documentation files loaded yet.")
@@ -311,9 +314,7 @@ class NanBot(commands.Bot):
             return
 
         try:
-            query_vector = await asyncio.wait_for(
-                self.llm.embed(query), timeout=15.0
-            )
+            query_vector = await asyncio.wait_for(self.llm.embed(query), timeout=15.0)
             results = self.store.search(query_vector, top_k=3)
         except TimeoutError:
             logger.error("Search timed out")

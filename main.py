@@ -77,7 +77,7 @@ async def main() -> None:
             except Exception:
                 pass
         # Stop health check server
-        if hasattr(bot, '_health_server') and bot._health_server:
+        if hasattr(bot, "_health_server") and bot._health_server:
             try:
                 bot._health_server.shutdown()
             except Exception:
