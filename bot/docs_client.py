@@ -46,7 +46,7 @@ def _strip_frontmatter(raw: str) -> str:
     match = _FRONTMATTER_RE.match(raw)
     if not match:
         return raw
-    return raw[match.end():]
+    return raw[match.end() :]
 
 
 def _sha256(text: str) -> str:
@@ -84,9 +84,7 @@ class _EtagStore:
         manifest = raw.get("manifest")
         bodies = raw.get("bodies") or {}
         self._data["manifest"] = manifest if isinstance(manifest, str) else None
-        self._data["bodies"] = {
-            k: v for k, v in bodies.items() if isinstance(k, str) and isinstance(v, str)
-        }
+        self._data["bodies"] = {k: v for k, v in bodies.items() if isinstance(k, str) and isinstance(v, str)}
 
     def _save(self) -> None:
         tmp = self._path.with_suffix(self._path.suffix + ".tmp")
@@ -270,7 +268,9 @@ class DocsClient:
         if computed != entry.content_hash:
             logger.warning(
                 "Body hash mismatch for %s: manifest=%s computed=%s",
-                entry.slug, entry.content_hash, computed,
+                entry.slug,
+                entry.content_hash,
+                computed,
             )
 
         tmp = self._cache_dir / f"{entry.slug}.md.tmp"

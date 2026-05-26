@@ -42,9 +42,7 @@ async def init_knowledge_base(store: SimpleVectorStore) -> None:
                         md_file.read_text(encoding="utf-8"),
                         strip_frontmatter=True,
                     )
-                    local_hashes[md_file.stem] = hashlib.sha256(
-                        local_text.encode("utf-8")
-                    ).hexdigest()
+                    local_hashes[md_file.stem] = hashlib.sha256(local_text.encode("utf-8")).hexdigest()
 
                 remote_hashes: dict[str, str] = {}
                 for entry in manifest.entries:
@@ -54,9 +52,7 @@ async def init_knowledge_base(store: SimpleVectorStore) -> None:
                         logger.warning("Shadow fetch failed for %s: %s", entry.slug, type(e).__name__)
                         continue
                     remote_text = canonicalize_doc_text(doc_body.body, strip_frontmatter=False)
-                    remote_hashes[entry.slug] = hashlib.sha256(
-                        remote_text.encode("utf-8")
-                    ).hexdigest()
+                    remote_hashes[entry.slug] = hashlib.sha256(remote_text.encode("utf-8")).hexdigest()
 
                 only_local = sorted(set(local_hashes) - set(remote_hashes))
                 only_remote = sorted(set(remote_hashes) - set(local_hashes))
