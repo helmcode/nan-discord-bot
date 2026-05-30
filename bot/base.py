@@ -13,7 +13,8 @@ import discord
 from discord.ext import commands
 
 from bot.config import logger, settings
-from bot.knowledge import SimpleVectorStore
+from bot.docs_client import DocsClient
+from bot.knowledge import SimpleVectorStore, load_documentation_from_remote
 from bot.llm import LLMClient
 from bot.metrics import send_metrics_report, send_user_metrics_report
 
@@ -75,6 +76,10 @@ class NanBot(commands.Bot):
         self._health_port = 9101
         self._health_server: HTTPServer | None = None
         self._health_thread: Thread | None = None
+        self._docs_last_sync: str | None = None
+        self._docs_last_sync_ok: bool = False
+        self._docs_refresh_task: asyncio.Task[None] | None = None
+        self._docs_refresh_lock = asyncio.Lock()
 
     def _start_health_server(self) -> None:
         """Start a lightweight HTTP health check server in a background thread."""
@@ -86,6 +91,8 @@ class NanBot(commands.Bot):
                         "status": "healthy" if self.bot._ready else "starting",
                         "initialized": self.bot._initialized,
                         "store_chunks": len(self.bot.store.chunks) if self.bot.store else 0,
+                        "docs_last_sync": self.bot._docs_last_sync,
+                        "docs_last_sync_ok": self.bot._docs_last_sync_ok,
                     }
                     body = json.dumps(health_data).encode()
                     self.send_response(200)
@@ -149,6 +156,55 @@ class NanBot(commands.Bot):
             )
         )
         await self.start_daily_metrics()
+
+        if self._docs_refresh_task is None or self._docs_refresh_task.done():
+            self._docs_refresh_task = asyncio.create_task(self._schedule_docs_refresh())
+        else:
+            logger.info("Docs refresh scheduler already running")
+
+    async def _refresh_docs_once(self) -> None:
+        from datetime import UTC, datetime
+
+        if self.store is None:
+            return
+
+        async with self._docs_refresh_lock:
+            try:
+                async with DocsClient() as client:
+                    result = await load_documentation_from_remote(self.store, client)
+
+                if result.new_chunks:
+                    embedded = await self.llm.embed_chunks(self.store)
+                    self.store.save()
+                    logger.info("Refresh: embedded %d new chunks", embedded)
+                elif result.stale_removed:
+                    self.store.save()
+
+                self._docs_last_sync_ok = True
+            except Exception as e:
+                logger.error("Docs refresh failed: %s", type(e).__name__)
+                self._docs_last_sync_ok = False
+            finally:
+                self._docs_last_sync = datetime.now(UTC).isoformat()
+
+    async def _schedule_docs_refresh(self) -> None:
+        if settings.docs_use_remote == "local":
+            logger.info("DOCS_USE_REMOTE=local, skipping remote docs refresh")
+            return
+
+        interval = max(60, settings.docs_refresh_interval)
+        logger.info(
+            "Docs refresh scheduler started (mode=%s, interval=%ds)",
+            settings.docs_use_remote,
+            interval,
+        )
+
+        try:
+            while True:
+                await self._refresh_docs_once()
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            logger.info("Docs refresh scheduler cancelled")
 
     async def _schedule_daily_metrics(self) -> None:
         """Schedule daily metrics to run at the configured hour."""
@@ -297,13 +353,16 @@ class NanBot(commands.Bot):
 
     @commands.command(name="docs", description="List available documentation files")
     async def docs(self, ctx: commands.Context) -> None:
-        from bot.config import DOCS_DIR
+        if not self.store:
+            await ctx.send("Knowledge base not initialized.")
+            return
 
-        docs = list(DOCS_DIR.glob("**/*.md"))
+        docs = sorted(self.store.get_tracked_sources())
         if not docs:
             await ctx.send("No documentation files loaded yet.")
             return
-        doc_list = "\n".join(f"- {d.name}" for d in docs)
+
+        doc_list = "\n".join(f"- {doc}" for doc in docs)
         embed = discord.Embed(title="Documentation", description=doc_list, color=discord.Color.blue())
         await ctx.send(embed=embed)
 
