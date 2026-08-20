@@ -12,6 +12,7 @@ Community Discord bot for [nan.builders](https://nan.builders). It answers membe
 - Daily token usage report posted to `STATUS_CHANNEL_ID` at `METRICS_SEND_HOUR` (UTC), pulled from the LiteLLM proxy.
 - HTTP health endpoint on port `9101` (`GET /health`) consumed by the Docker `HEALTHCHECK`.
 - Slack notification on every new thread opened in the channels listed in `SUPPORT_CHANNEL_IDS` (e.g. `#support`), posted through an Incoming Webhook.
+- Mirroring of support threads into Slack: with a bot token, every human message posted in a tracked thread is echoed as a reply under the Slack announcement.
 - Doc-hash optimization: unchanged markdown files are skipped on startup, so embeddings are only recomputed when content actually changes.
 
 ## Tech stack
@@ -35,6 +36,8 @@ Metrics live in `bot/metrics.py`. They hit the LiteLLM proxy `/spend/logs/ui` en
 
 Slack notifications live in `bot/slack.py`. `NanBot.on_thread_create` fires on Discord's `THREAD_CREATE` gateway event (only for newly created threads, so re-joins do not re-notify), filters by `SUPPORT_CHANNEL_IDS`, resolves the opening message — `Thread.starter_message` when cached, otherwise `fetch_message(thread.id)` with one retry for the forum race where the event outruns the message — and POSTs a Block Kit payload to `SLACK_WEBHOOK_URL`. The `SlackNotifier` retries 5xx and 429 with a 0.5/1/2 s backoff, never retries other 4xx, and escapes `&`, `<`, `>` in every user-controlled field so thread titles cannot forge Slack links. With `SLACK_WEBHOOK_URL` empty the notifier is a no-op.
 
+When `SLACK_BOT_TOKEN` and `SLACK_CHANNEL_ID` are set, `SlackApiClient` takes over and posts through `chat.postMessage` instead. That is what makes mirroring possible: the Web API returns the message `ts`, which an Incoming Webhook never does, and a threaded reply needs it as `thread_ts`. The `ts` is stored in `vector_db/slack_threads.db` by `bot/thread_map.py` — inside the Docker volume, so a redeploy does not orphan live threads — and purged after 30 days. `NanBot._mirror_to_slack` then echoes each human message of a tracked thread, skipping bots and the forum opening message (already the body of the announcement). Posts are serialised behind a lock with a ~1 s spacing to respect Slack's per-channel rate limit.
+
 ## Project structure
 
 ```
@@ -47,7 +50,8 @@ discord-bot/
 │   ├── knowledge.py                 # SimpleVectorStore, chunking, doc loader
 │   ├── llm.py                       # LLMClient, CircuitBreaker, RAG prompt
 │   ├── metrics.py                   # LiteLLM spend log aggregation and reports
-│   ├── slack.py                     # Slack Incoming Webhook notifier and payload builder
+│   ├── slack.py                     # Slack notifier (webhook + Web API) and payload builders
+│   ├── thread_map.py                # Discord thread -> Slack ts mapping (SQLite)
 │   └── docs/
 │       └── knowledge/               # Embedded markdown corpus
 │           ├── intro.md
@@ -130,6 +134,8 @@ Auto-response is triggered when the bot is **mentioned** inside a channel listed
 | `METRICS_SEND_HOUR`     | no       | `9`                              | UTC hour (0–23) at which the daily metrics report is posted.                                             |
 | `SUPPORT_CHANNEL_IDS`   | no       | `""` (disables notifications)   | Comma-separated Discord channel IDs (text or forum) whose new threads are announced in Slack.            |
 | `SLACK_WEBHOOK_URL`     | no       | `""` (disables notifications)   | Slack Incoming Webhook URL. The destination channel is fixed in the Slack app, not here.                 |
+| `SLACK_BOT_TOKEN`       | no       | `""` (webhook mode)             | Slack bot token (`xoxb-…`) with `chat:write`. Enables thread mirroring; takes precedence over the webhook. |
+| `SLACK_CHANNEL_ID`      | no       | `""`                             | Destination Slack channel ID. Required with `SLACK_BOT_TOKEN`.                                           |
 | `SLACK_HTTP_TIMEOUT`    | no       | `10`                             | Per-request HTTP timeout (seconds) for the webhook POST.                                                 |
 | `DOCS_USE_REMOTE`       | no       | `local`                          | Source for docs: `local` (`bot/docs/knowledge/`), `remote` (web docs API), or `shadow` (local + warn on remote drift). |
 | `DOCS_BASE_URL`         | no       | `https://nan.builders`           | Base URL of the web that serves `/api/docs/manifest.json` and `/api/docs/{slug}.md`.                     |
