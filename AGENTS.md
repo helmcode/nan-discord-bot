@@ -43,8 +43,10 @@ ALLOWED_CHANNELS=                 # Channel IDs donde el bot responde (múltiple
 STATUS_CHANNEL_ID=                # Canal donde se publica el reporte diario de métricas
 METRICS_SEND_HOUR=9               # Hora UTC (0-23) del reporte diario
 SLACK_WEBHOOK_URL=                # Incoming Webhook de Slack; vacío = notificaciones deshabilitadas
+SLACK_BOT_TOKEN=                  # Bot token (xoxb-...) con scope chat:write; habilita el espejo de hilos
+SLACK_CHANNEL_ID=                 # Canal destino cuando se usa SLACK_BOT_TOKEN
 SUPPORT_CHANNEL_IDS=              # Channel IDs cuyos hilos nuevos se avisan en Slack (coma-separados)
-SLACK_HTTP_TIMEOUT=10             # Timeout (s) del POST al webhook
+SLACK_HTTP_TIMEOUT=10             # Timeout (s) de las peticiones a Slack
 ```
 
 **Comportamiento**: El bot SOLO responde cuando lo mencionan (`@NaN Builders`). No responde automáticamente en canales de soporte.
@@ -60,7 +62,21 @@ y un preview del mensaje inicial. Funciona con canales de texto y con canales de
 Requiere `SLACK_WEBHOOK_URL`: en Slack, crear una app → **Incoming Webhooks** → activar →
 **Add New Webhook to Workspace** y elegir el canal de destino. El canal se fija ahí, no en el `.env`.
 
-Sin `SLACK_WEBHOOK_URL` o sin `SUPPORT_CHANNEL_IDS` la feature queda inactiva y el bot funciona igual.
+Sin Slack configurado o sin `SUPPORT_CHANNEL_IDS` la feature queda inactiva y el bot funciona igual.
+
+**Dos modos, y el bot prefiere el segundo:**
+
+| | Webhook (`SLACK_WEBHOOK_URL`) | Bot token (`SLACK_BOT_TOKEN` + `SLACK_CHANNEL_ID`) |
+|---|---|---|
+| Avisa de hilos nuevos | Sí | Sí |
+| Espeja los mensajes del hilo | **No** | Sí |
+| Configuración | Una URL | App con scope `chat:write` e invitada al canal |
+
+El webhook **no puede** espejar hilos: su respuesta no incluye el `ts` del mensaje,
+y sin ese `ts` no hay forma de colgar respuestas de él. La Web API sí lo devuelve.
+
+El mapeo `hilo de Discord -> ts de Slack` se guarda en `vector_db/slack_threads.db`
+(dentro del volumen, así sobrevive a los despliegues) y se purga a los 30 días.
 
 ### Intents de Discord
 

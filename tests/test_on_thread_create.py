@@ -73,6 +73,12 @@ class RecordingSlack:
 
 
 @pytest.fixture(autouse=True)
+def isolated_cwd(tmp_path, monkeypatch):
+    """NanBot opens the thread-map DB relative to the cwd; keep it out of the repo."""
+    monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture(autouse=True)
 def no_sleep(monkeypatch):
     """Keep the starter-message retry backoff from slowing the suite down."""
 
@@ -184,3 +190,144 @@ async def test_a_slack_failure_does_not_propagate(bot):
     bot.slack = ExplodingSlack()
 
     await bot.on_thread_create(FakeThread(starter_message=FakeMessage("hola")))
+
+
+# --- mirroring later messages into the Slack thread -----------------------
+
+
+@dataclass
+class FakeAuthor:
+    display_name: str = "crstian"
+    bot: bool = False
+
+
+@dataclass
+class FakeAttachment:
+    filename: str
+
+
+@dataclass
+class FakeDiscordMessage:
+    id: int = 777
+    content: str = "sigue sin arrancar"
+    author: FakeAuthor = field(default_factory=FakeAuthor)
+    channel: object = None
+    attachments: list = field(default_factory=list)
+
+
+class RecordingApi:
+    def __init__(self, enabled: bool = True) -> None:
+        self.enabled = enabled
+        self.channel = "C0123"
+        self.replies: list[tuple[str, str, str]] = []
+        self.announced: list[object] = []
+
+    async def notify_support_thread(self, event):
+        self.announced.append(event)
+        return "1610144875.000600"
+
+    async def reply_in_thread(self, thread_ts: str, author: str, text: str) -> bool:
+        self.replies.append((thread_ts, author, text))
+        return True
+
+
+@pytest.fixture
+def mirroring_bot(bot):
+    bot.slack_api = RecordingApi()
+    return bot
+
+
+def _thread_channel(bot, thread_id: int = 555, parent_id: int = SUPPORT_CHANNEL_ID):
+    """A discord.Thread stand-in that passes the isinstance check."""
+    channel = discord.Thread.__new__(discord.Thread)
+    object.__setattr__(channel, "id", thread_id)
+    object.__setattr__(channel, "parent_id", parent_id)
+    return channel
+
+
+async def test_announcing_a_thread_stores_the_slack_ts(mirroring_bot):
+    thread = FakeThread(starter_message=FakeMessage("hola"))
+
+    await mirroring_bot.on_thread_create(thread)
+
+    assert mirroring_bot.thread_map.lookup(thread.id) == ("1610144875.000600", "C0123")
+
+
+async def test_a_message_in_a_tracked_thread_is_mirrored(mirroring_bot):
+    mirroring_bot.thread_map.remember(555, "1610144875.000600", "C0123")
+    msg = FakeDiscordMessage(channel=_thread_channel(mirroring_bot))
+
+    await mirroring_bot._mirror_to_slack(msg)
+
+    assert mirroring_bot.slack_api.replies == [("1610144875.000600", "crstian", "sigue sin arrancar")]
+
+
+async def test_the_forum_opening_message_is_not_mirrored_twice(mirroring_bot):
+    """It is already the body of the announcement."""
+    mirroring_bot.thread_map.remember(555, "1610144875.000600", "C0123")
+    msg = FakeDiscordMessage(id=555, channel=_thread_channel(mirroring_bot, thread_id=555))
+
+    await mirroring_bot._mirror_to_slack(msg)
+
+    assert mirroring_bot.slack_api.replies == []
+
+
+async def test_a_thread_with_no_mapping_is_skipped(mirroring_bot):
+    msg = FakeDiscordMessage(channel=_thread_channel(mirroring_bot))
+    await mirroring_bot._mirror_to_slack(msg)
+    assert mirroring_bot.slack_api.replies == []
+
+
+async def test_messages_outside_support_channels_are_skipped(mirroring_bot):
+    mirroring_bot.thread_map.remember(555, "1610144875.000600", "C0123")
+    msg = FakeDiscordMessage(channel=_thread_channel(mirroring_bot, parent_id=OTHER_CHANNEL_ID))
+
+    await mirroring_bot._mirror_to_slack(msg)
+
+    assert mirroring_bot.slack_api.replies == []
+
+
+async def test_attachments_are_named_in_the_mirrored_message(mirroring_bot):
+    mirroring_bot.thread_map.remember(555, "1610144875.000600", "C0123")
+    msg = FakeDiscordMessage(
+        content="mira esto",
+        channel=_thread_channel(mirroring_bot),
+        attachments=[FakeAttachment("error.png")],
+    )
+
+    await mirroring_bot._mirror_to_slack(msg)
+
+    assert "error.png" in mirroring_bot.slack_api.replies[0][2]
+
+
+async def test_an_empty_message_is_not_mirrored(mirroring_bot):
+    mirroring_bot.thread_map.remember(555, "1610144875.000600", "C0123")
+    msg = FakeDiscordMessage(content="", channel=_thread_channel(mirroring_bot))
+
+    await mirroring_bot._mirror_to_slack(msg)
+
+    assert mirroring_bot.slack_api.replies == []
+
+
+async def test_a_mirror_failure_does_not_propagate(mirroring_bot):
+    class ExplodingApi(RecordingApi):
+        async def reply_in_thread(self, thread_ts, author, text):
+            raise RuntimeError("slack down")
+
+    mirroring_bot.slack_api = ExplodingApi()
+    mirroring_bot.thread_map.remember(555, "1610144875.000600", "C0123")
+
+    await mirroring_bot._mirror_to_slack(FakeDiscordMessage(channel=_thread_channel(mirroring_bot)))
+
+
+async def test_bot_messages_are_not_mirrored(mirroring_bot):
+    """Slack mirrors the human conversation, not the bot's LLM answers."""
+    mirroring_bot.thread_map.remember(555, "1610144875.000600", "C0123")
+    msg = FakeDiscordMessage(
+        author=FakeAuthor(display_name="NaN Builders", bot=True),
+        channel=_thread_channel(mirroring_bot),
+    )
+
+    await mirroring_bot._mirror_to_slack(msg)
+
+    assert mirroring_bot.slack_api.replies == []

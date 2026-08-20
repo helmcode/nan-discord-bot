@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     docs_http_timeout: int = 10
 
     slack_webhook_url: str = ""
+    slack_bot_token: str = ""
+    slack_channel_id: str = ""
     slack_http_timeout: int = 10
     support_channel_ids: str = ""
 
