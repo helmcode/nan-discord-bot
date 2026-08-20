@@ -98,6 +98,9 @@ pytest -x       # stop at first failure
 - Follow the existing style in the codebase.
 - `ruff` is the linter and formatter (config in `pyproject.toml`,
   `line-length = 120`, `target-version = "py311"`).
+- `ruff format` also formats Python inside markdown code blocks. The knowledge
+  base under `bot/docs/knowledge/` is excluded because it mirrors the remote docs
+  API; edit those files to match the remote content, not the formatter.
 - Use type hints. Target Python 3.11+ syntax (`list[str]`, `str | None`,
   ...).
 - Never commit secrets, API keys, Discord tokens, or LiteLLM keys. Use `.env`

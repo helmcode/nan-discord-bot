@@ -42,11 +42,25 @@ TOP_K=5
 ALLOWED_CHANNELS=                 # Channel IDs donde el bot responde (múltiples separados por coma)
 STATUS_CHANNEL_ID=                # Canal donde se publica el reporte diario de métricas
 METRICS_SEND_HOUR=9               # Hora UTC (0-23) del reporte diario
+SLACK_WEBHOOK_URL=                # Incoming Webhook de Slack; vacío = notificaciones deshabilitadas
+SUPPORT_CHANNEL_IDS=              # Channel IDs cuyos hilos nuevos se avisan en Slack (coma-separados)
+SLACK_HTTP_TIMEOUT=10             # Timeout (s) del POST al webhook
 ```
 
 **Comportamiento**: El bot SOLO responde cuando lo mencionan (`@NaN Builders`). No responde automáticamente en canales de soporte.
 
 **Múltiples canales**: `ALLOWED_CHANNELS` acepta múltiples IDs separados por coma, ej: `123456789,987654321,111222333`
+
+### Notificaciones a Slack
+
+Cuando se crea un hilo en un canal listado en `SUPPORT_CHANNEL_IDS` (ej. `#support`), el bot
+publica un mensaje en Slack vía Incoming Webhook con el título del hilo, el autor, el canal
+y un preview del mensaje inicial. Funciona con canales de texto y con canales de foro.
+
+Requiere `SLACK_WEBHOOK_URL`: en Slack, crear una app → **Incoming Webhooks** → activar →
+**Add New Webhook to Workspace** y elegir el canal de destino. El canal se fija ahí, no en el `.env`.
+
+Sin `SLACK_WEBHOOK_URL` o sin `SUPPORT_CHANNEL_IDS` la feature queda inactiva y el bot funciona igual.
 
 ### Intents de Discord
 

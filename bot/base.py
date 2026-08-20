@@ -17,6 +17,7 @@ from bot.docs_client import DocsClient
 from bot.knowledge import SimpleVectorStore, load_documentation_from_remote
 from bot.llm import LLMClient
 from bot.metrics import send_metrics_report, send_user_metrics_report
+from bot.slack import SlackNotifier, SupportThreadEvent
 
 # Rate limiting: max 3 mentions per user per 60-second window
 _RATE_LIMIT = 3
@@ -68,6 +69,7 @@ class NanBot(commands.Bot):
         )
 
         self.llm = LLMClient()
+        self.slack = SlackNotifier()
         self.store: SimpleVectorStore | None = None
         self._initialized = False
         self._ready = False
@@ -245,6 +247,71 @@ class NanBot(commands.Bot):
             )
         else:
             logger.info("Metrics channel or LiteLLM admin key not configured, skipping daily metrics")
+
+    async def _fetch_starter_text(self, thread: discord.Thread) -> str:
+        """Best-effort text of the message that opened the thread.
+
+        Forum posts carry their opening message inside the thread under the
+        thread's own ID. Threads started from a message in a text channel keep
+        that message in the parent channel, so there is nothing to fetch and the
+        preview is simply omitted.
+        """
+        starter = thread.starter_message
+        if starter is not None:
+            return starter.content or ""
+
+        # THREAD_CREATE can outrun the opening message, so a NotFound on the
+        # first try is worth one retry; Forbidden never is.
+        for delay in (0, 1.0):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                message = await thread.fetch_message(thread.id)
+            except discord.Forbidden:
+                logger.debug("No permission to read the starter message of thread %s", thread.id)
+                return ""
+            except discord.HTTPException as e:
+                logger.debug("Could not fetch starter message for thread %s: %s", thread.id, type(e).__name__)
+                continue
+            return message.content or ""
+        return ""
+
+    async def on_thread_create(self, thread: discord.Thread) -> None:
+        """Announce new threads in the configured support channels on Slack."""
+        support_channels = settings.support_channel_id_set
+        if not support_channels or thread.parent_id not in support_channels:
+            return
+
+        if not self.slack.enabled:
+            logger.warning("New thread in support channel but SLACK_WEBHOOK_URL is not configured")
+            return
+
+        preview = await self._fetch_starter_text(thread)
+
+        owner = thread.owner
+        author = owner.display_name if owner is not None else f"user {thread.owner_id}"
+        parent = thread.parent
+        channel_name = parent.name if parent is not None else str(thread.parent_id)
+
+        event = SupportThreadEvent(
+            thread_name=thread.name,
+            thread_url=thread.jump_url,
+            channel_name=channel_name,
+            author=_sanitize_username(author),
+            preview=preview,
+        )
+
+        try:
+            sent = await asyncio.wait_for(self.slack.notify_support_thread(event), timeout=30.0)
+        except TimeoutError:
+            logger.error("Slack notification timed out for thread %s", thread.id)
+            return
+        except Exception as e:
+            logger.error("Slack notification failed for thread %s: %s", thread.id, type(e).__name__)
+            return
+
+        if sent:
+            logger.info("Notified Slack about thread %s in #%s", thread.id, channel_name)
 
     async def on_message(self, message: discord.Message) -> None:
         """Process incoming messages for auto-responses."""
