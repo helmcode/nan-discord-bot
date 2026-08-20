@@ -42,7 +42,7 @@ TOP_K=5
 ALLOWED_CHANNELS=                 # Channel IDs donde el bot responde (múltiples separados por coma)
 STATUS_CHANNEL_ID=                # Canal donde se publica el reporte diario de métricas
 METRICS_SEND_HOUR=9               # Hora UTC (0-23) del reporte diario
-SLACK_WEBHOOK_URL=                # Incoming Webhook de Slack; vacío = notificaciones deshabilitadas
+SLACK_WEBHOOK_URL=                # Incoming Webhook de Slack (https://hooks.slack.com/services/...); vacío o cualquier otra URL = notificaciones deshabilitadas
 SUPPORT_CHANNEL_IDS=              # Channel IDs cuyos hilos nuevos se avisan en Slack (coma-separados)
 SLACK_HTTP_TIMEOUT=10             # Timeout (s) del POST al webhook
 ```
