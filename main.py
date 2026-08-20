@@ -134,6 +134,12 @@ async def main() -> None:
                 await bot.llm._embed_client.close()
             except Exception:
                 pass
+        # Close Slack client
+        if bot.slack:
+            try:
+                await bot.slack.close()
+            except Exception:
+                pass
         # Stop health check server
         if hasattr(bot, "_health_server") and bot._health_server:
             try:

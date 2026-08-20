@@ -11,6 +11,7 @@ Community Discord bot for [nan.builders](https://nan.builders). It answers membe
 - Slash commands (Discord interactions): `/metrics`, `/my-metrics`.
 - Daily token usage report posted to `STATUS_CHANNEL_ID` at `METRICS_SEND_HOUR` (UTC), pulled from the LiteLLM proxy.
 - HTTP health endpoint on port `9101` (`GET /health`) consumed by the Docker `HEALTHCHECK`.
+- Slack notification on every new thread opened in the channels listed in `SUPPORT_CHANNEL_IDS` (e.g. `#support`), posted through an Incoming Webhook.
 - Doc-hash optimization: unchanged markdown files are skipped on startup, so embeddings are only recomputed when content actually changes.
 
 ## Tech stack
@@ -32,6 +33,8 @@ On message events, `NanBot.on_message` filters by `ALLOWED_CHANNELS` and mention
 
 Metrics live in `bot/metrics.py`. They hit the LiteLLM proxy `/spend/logs/ui` endpoint (configured via `LITELLM_PROXY_URL` and `LITELLM_ADMIN_KEY`) and aggregate token usage per `user_api_key_alias`. The daily scheduler sleeps until `METRICS_SEND_HOUR` UTC, posts the top-10 report to `STATUS_CHANNEL_ID`, and then loops every 24 hours.
 
+Slack notifications live in `bot/slack.py`. `NanBot.on_thread_create` fires on Discord's `THREAD_CREATE` gateway event (only for newly created threads, so re-joins do not re-notify), filters by `SUPPORT_CHANNEL_IDS`, resolves the opening message — `Thread.starter_message` when cached, otherwise `fetch_message(thread.id)` with one retry for the forum race where the event outruns the message — and POSTs a Block Kit payload to `SLACK_WEBHOOK_URL`. The `SlackNotifier` retries 5xx and 429 with a 0.5/1/2 s backoff, never retries other 4xx, and escapes `&`, `<`, `>` in every user-controlled field so thread titles cannot forge Slack links. With `SLACK_WEBHOOK_URL` empty the notifier is a no-op.
+
 ## Project structure
 
 ```
@@ -44,6 +47,7 @@ discord-bot/
 │   ├── knowledge.py                 # SimpleVectorStore, chunking, doc loader
 │   ├── llm.py                       # LLMClient, CircuitBreaker, RAG prompt
 │   ├── metrics.py                   # LiteLLM spend log aggregation and reports
+│   ├── slack.py                     # Slack Incoming Webhook notifier and payload builder
 │   └── docs/
 │       └── knowledge/               # Embedded markdown corpus
 │           ├── intro.md
@@ -68,6 +72,7 @@ discord-bot/
 - A Discord application with a bot user, a token, and the following privileged intents enabled in the [Discord Developer Portal](https://discord.com/developers/applications): **MESSAGE CONTENT INTENT** and **SERVER MEMBERS INTENT**. Without them the bot fails to connect with `PrivilegedIntentsRequired`.
 - The bot invited to your guild with permissions to read messages, send messages, embed links, and use slash commands.
 - A LiteLLM API key. The bot defaults to `https://api.nan.builders/v1`; override with `LITELLM_BASE_URL` if you run your own gateway.
+- For the Slack support-thread notifications: a Slack app with **Incoming Webhooks** enabled and a webhook added to the destination channel, plus the Discord bot having *View Channel* and *Read Message History* on the support channel so it can read the thread's opening message for the preview.
 - For the metrics features: network reachability to the LiteLLM proxy URL (defaults to `http://localhost:4000`, i.e. the bot is expected to run on the same host) and an admin key with read access to `/spend/logs/ui`.
 
 ### Local setup (without Docker)
@@ -123,6 +128,9 @@ Auto-response is triggered when the bot is **mentioned** inside a channel listed
 | `ALLOWED_CHANNELS`   | no       | `""` (all channels)              | Comma-separated Discord channel IDs the bot will respond in. Empty means every channel is allowed.       |
 | `STATUS_CHANNEL_ID`     | no       | `""` (disables daily report)     | Channel ID where the daily metrics report is posted. Required for the scheduler to run.                  |
 | `METRICS_SEND_HOUR`     | no       | `9`                              | UTC hour (0–23) at which the daily metrics report is posted.                                             |
+| `SUPPORT_CHANNEL_IDS`   | no       | `""` (disables notifications)   | Comma-separated Discord channel IDs (text or forum) whose new threads are announced in Slack.            |
+| `SLACK_WEBHOOK_URL`     | no       | `""` (disables notifications)   | Slack Incoming Webhook URL. The destination channel is fixed in the Slack app, not here.                 |
+| `SLACK_HTTP_TIMEOUT`    | no       | `10`                             | Per-request HTTP timeout (seconds) for the webhook POST.                                                 |
 | `DOCS_USE_REMOTE`       | no       | `local`                          | Source for docs: `local` (`bot/docs/knowledge/`), `remote` (web docs API), or `shadow` (local + warn on remote drift). |
 | `DOCS_BASE_URL`         | no       | `https://nan.builders`           | Base URL of the web that serves `/api/docs/manifest.json` and `/api/docs/{slug}.md`.                     |
 | `DOCS_REFRESH_INTERVAL` | no       | `900`                            | Seconds between docs syncs when `DOCS_USE_REMOTE` is not `local`. Aligned with the web `Cache-Control`.   |
