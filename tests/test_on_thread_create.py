@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import sqlite3
 from dataclasses import dataclass, field
 
 import discord
@@ -93,7 +96,8 @@ def bot(monkeypatch):
     monkeypatch.setattr(settings, "support_channel_ids", str(SUPPORT_CHANNEL_ID))
     instance = NanBot()
     instance.slack = RecordingSlack()
-    return instance
+    yield instance
+    instance.thread_map.close()
 
 
 async def test_notifies_slack_for_a_thread_in_a_support_channel(bot):
@@ -123,6 +127,7 @@ async def test_ignores_every_thread_when_no_support_channel_is_configured(monkey
     await instance.on_thread_create(FakeThread())
 
     assert instance.slack.events == []
+    instance.thread_map.close()
 
 
 async def test_does_nothing_when_slack_is_not_configured(bot):
@@ -213,21 +218,31 @@ class FakeDiscordMessage:
     author: FakeAuthor = field(default_factory=FakeAuthor)
     channel: object = None
     attachments: list = field(default_factory=list)
+    # discord.Message.clean_content resolves <@123> into @name; the fake mirrors
+    # content unless a test sets it.
+    clean_content: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.clean_content is None:
+            self.clean_content = self.content
 
 
 class RecordingApi:
-    def __init__(self, enabled: bool = True) -> None:
+    def __init__(self, enabled: bool = True, ts: str | None = "1610144875.000600") -> None:
         self.enabled = enabled
         self.channel = "C0123"
+        self._ts = ts
         self.replies: list[tuple[str, str, str]] = []
+        self.reply_channels: list[str | None] = []
         self.announced: list[object] = []
 
     async def notify_support_thread(self, event):
         self.announced.append(event)
-        return "1610144875.000600"
+        return self._ts
 
-    async def reply_in_thread(self, thread_ts: str, author: str, text: str) -> bool:
+    async def reply_in_thread(self, thread_ts: str, author: str, text: str, channel: str | None = None) -> bool:
         self.replies.append((thread_ts, author, text))
+        self.reply_channels.append(channel)
         return True
 
 
@@ -297,7 +312,7 @@ async def test_attachments_are_named_in_the_mirrored_message(mirroring_bot):
 
     await mirroring_bot._mirror_to_slack(msg)
 
-    assert "error.png" in mirroring_bot.slack_api.replies[0][2]
+    assert mirroring_bot.slack_api.replies[0][2] == "mira esto\n[attachments: error.png]"
 
 
 async def test_an_empty_message_is_not_mirrored(mirroring_bot):
@@ -331,3 +346,142 @@ async def test_bot_messages_are_not_mirrored(mirroring_bot):
     await mirroring_bot._mirror_to_slack(msg)
 
     assert mirroring_bot.slack_api.replies == []
+
+
+async def test_mentions_reach_slack_as_names_not_raw_ids(mirroring_bot):
+    mirroring_bot.thread_map.remember(555, "1610144875.000600", "C0123")
+    msg = FakeDiscordMessage(
+        content="<@123456789012345678> mira esto",
+        clean_content="@crstian mira esto",
+        channel=_thread_channel(mirroring_bot),
+    )
+
+    await mirroring_bot._mirror_to_slack(msg)
+
+    assert mirroring_bot.slack_api.replies[0][2] == "@crstian mira esto"
+
+
+async def test_a_reply_goes_to_the_channel_stored_with_the_thread(mirroring_bot):
+    """SLACK_CHANNEL_ID may have changed since the announcement; the parent did not move."""
+    mirroring_bot.thread_map.remember(555, "1610144875.000600", "C_OLD")
+
+    await mirroring_bot._mirror_to_slack(FakeDiscordMessage(channel=_thread_channel(mirroring_bot)))
+
+    assert mirroring_bot.slack_api.reply_channels == ["C_OLD"]
+
+
+async def test_a_failed_announcement_stores_no_mapping(mirroring_bot, monkeypatch):
+    mirroring_bot.slack_api = RecordingApi(ts=None)
+    stored: list[tuple] = []
+    monkeypatch.setattr(mirroring_bot.thread_map, "remember", lambda *args: stored.append(args))
+
+    await mirroring_bot.on_thread_create(FakeThread(starter_message=FakeMessage("hola")))
+
+    assert stored == []
+
+
+async def test_a_mapping_failure_is_not_reported_as_a_slack_failure(mirroring_bot, monkeypatch, caplog):
+    def broken(*_args):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(mirroring_bot.thread_map, "remember", broken)
+
+    with caplog.at_level(logging.INFO, logger="nan-bot"):
+        await mirroring_bot.on_thread_create(FakeThread(starter_message=FakeMessage("hola")))
+
+    assert "could not store the thread mapping" in caplog.text
+    assert "Slack notification failed" not in caplog.text
+
+
+# --- on_message wiring and on_ready housekeeping --------------------------
+
+
+class FakeUser:
+    id = 1
+
+    def mentioned_in(self, _message) -> bool:
+        return False
+
+
+@pytest.fixture
+def connected_bot(mirroring_bot):
+    """A bot that looks logged in, with commands stubbed out."""
+    mirroring_bot._connection.user = FakeUser()
+    mirroring_bot.processed: list[object] = []
+
+    async def process_commands(message) -> None:
+        mirroring_bot.processed.append(message)
+
+    mirroring_bot.process_commands = process_commands
+    return mirroring_bot
+
+
+async def _drain(bot) -> None:
+    if bot._bg_tasks:
+        await asyncio.gather(*bot._bg_tasks)
+
+
+async def test_on_message_mirrors_a_reply_in_a_tracked_thread(connected_bot):
+    connected_bot.thread_map.remember(555, "1610144875.000600", "C0123")
+    msg = FakeDiscordMessage(channel=_thread_channel(connected_bot))
+
+    await connected_bot.on_message(msg)
+    await _drain(connected_bot)
+
+    assert connected_bot.slack_api.replies == [("1610144875.000600", "crstian", "sigue sin arrancar")]
+    assert connected_bot.processed == [msg]
+
+
+async def test_on_message_mirrors_nothing_without_the_web_api(connected_bot):
+    connected_bot.slack_api = RecordingApi(enabled=False)
+    connected_bot.thread_map.remember(555, "1610144875.000600", "C0123")
+
+    await connected_bot.on_message(FakeDiscordMessage(channel=_thread_channel(connected_bot)))
+    await _drain(connected_bot)
+
+    assert connected_bot.slack_api.replies == []
+    assert connected_bot._bg_tasks == set()
+
+
+async def test_a_slow_slack_does_not_delay_the_bot(connected_bot):
+    release = asyncio.Event()
+
+    class SlowApi(RecordingApi):
+        async def reply_in_thread(self, *args, **kwargs) -> bool:
+            await release.wait()
+            return await super().reply_in_thread(*args, **kwargs)
+
+    connected_bot.slack_api = SlowApi()
+    connected_bot.thread_map.remember(555, "1610144875.000600", "C0123")
+    msg = FakeDiscordMessage(channel=_thread_channel(connected_bot))
+
+    # Awaiting the mirror inline would block here until Slack answered.
+    await asyncio.wait_for(connected_bot.on_message(msg), timeout=1.0)
+    assert connected_bot.processed == [msg]
+    assert connected_bot.slack_api.replies == []
+
+    release.set()
+    await _drain(connected_bot)
+    assert len(connected_bot.slack_api.replies) == 1
+    assert connected_bot._bg_tasks == set()
+
+
+async def test_on_ready_purges_stale_thread_mappings(connected_bot, monkeypatch):
+    async def noop(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(connected_bot, "change_presence", noop)
+    monkeypatch.setattr(connected_bot, "start_daily_metrics", noop)
+    monkeypatch.setattr(connected_bot, "_schedule_docs_refresh", noop)
+
+    tm = connected_bot.thread_map
+    tm.remember(1, "1.1", "C0123")
+    tm.remember(2, "2.2", "C0123")
+    tm._conn.execute("UPDATE slack_threads SET created_at = 0 WHERE discord_thread_id = 1")
+    tm._conn.commit()
+
+    await connected_bot.on_ready()
+    await connected_bot._docs_refresh_task
+
+    assert tm.lookup(1) is None
+    assert tm.lookup(2) == ("2.2", "C0123")

@@ -92,6 +92,9 @@ class NanBot(commands.Bot):
         self._docs_last_sync_ok: bool = False
         self._docs_refresh_task: asyncio.Task[None] | None = None
         self._docs_refresh_lock = asyncio.Lock()
+        # Strong references to fire-and-forget tasks (the Slack mirror), so the
+        # event loop's weak references do not let them be garbage-collected.
+        self._bg_tasks: set[asyncio.Task[None]] = set()
 
     def _start_health_server(self) -> None:
         """Start a lightweight HTTP health check server in a background thread."""
@@ -319,12 +322,9 @@ class NanBot(commands.Bot):
         try:
             if self.slack_api.enabled:
                 ts = await asyncio.wait_for(self.slack_api.notify_support_thread(event), timeout=30.0)
-                if ts:
-                    # Without this the thread is announced but every later
-                    # message has nothing to hang off.
-                    self.thread_map.remember(thread.id, ts, self.slack_api.channel)
                 sent = ts is not None
             else:
+                ts = None
                 sent = await asyncio.wait_for(self.slack.notify_support_thread(event), timeout=30.0)
         except TimeoutError:
             logger.error("Slack notification timed out for thread %s", thread.id)
@@ -332,6 +332,19 @@ class NanBot(commands.Bot):
         except Exception as e:
             logger.error("Slack notification failed for thread %s: %s", thread.id, type(e).__name__)
             return
+
+        if ts:
+            # Without this the thread is announced but every later message has
+            # nothing to hang off. Slack already has the message, so a failure
+            # here is a storage problem, not a notification one.
+            try:
+                self.thread_map.remember(thread.id, ts, self.slack_api.channel)
+            except Exception as e:
+                logger.error(
+                    "Thread %s was announced in Slack but could not store the thread mapping: %s",
+                    thread.id,
+                    type(e).__name__,
+                )
 
         if sent:
             logger.info("Notified Slack about thread %s in #%s", thread.id, channel_name)
@@ -361,11 +374,13 @@ class NanBot(commands.Bot):
             logger.debug("No Slack thread mapped for Discord thread %s", channel.id)
             return
 
-        thread_ts, _ = mapping
-        content = message.content or ""
+        thread_ts, slack_channel = mapping
+        # clean_content turns <@123…> mentions into readable @names; Slack
+        # cannot resolve Discord IDs.
+        content = message.clean_content or ""
         if message.attachments:
             names = ", ".join(a.filename for a in message.attachments[:5])
-            content = f"{content}\n[adjuntos: {names}]".strip()
+            content = f"{content}\n[attachments: {names}]".strip()
         if not content:
             return
 
@@ -375,6 +390,7 @@ class NanBot(commands.Bot):
                     thread_ts,
                     _sanitize_username(message.author.display_name),
                     content,
+                    channel=slack_channel,
                 ),
                 timeout=30.0,
             )
@@ -389,7 +405,11 @@ class NanBot(commands.Bot):
             return
 
         if self.slack_api.enabled:
-            await self._mirror_to_slack(message)
+            # In the background: a slow Slack (30 s timeout plus retries) must
+            # not delay the bot's own answer in Discord.
+            task = asyncio.create_task(self._mirror_to_slack(message))
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
 
         # Delegate to slash commands before processing auto-responses
         await self.process_commands(message)

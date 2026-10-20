@@ -1,4 +1,4 @@
-"""Slack notifications via Incoming Webhook."""
+"""Slack notifications via Incoming Webhook or the Web API (chat.postMessage)."""
 
 from __future__ import annotations
 
@@ -17,7 +17,14 @@ _BACKOFF_SECONDS = (0.5, 1.0, 2.0)
 _WEBHOOK_PREFIX = "https://hooks.slack.com/services/"
 _MAX_TITLE_LEN = 200
 _MAX_PREVIEW_LEN = 600
-_MAX_REPLY_LEN = 2000
+# Slack rejects a section block whose text exceeds 3000 characters. The limit
+# applies to the escaped text, and escaping can grow it (one "<" becomes "&lt;"),
+# so the mirrored body is truncated after escaping, with headroom to spare.
+_MAX_SECTION_LEN = 3000
+_MAX_REPLY_LEN = 2900
+# A bot token, not a user (xoxp-) or app-level (xapp-) one: only a bot token
+# posts as the app with chat:write.
+_BOT_TOKEN_PREFIX = "xoxb-"
 
 # Slack mrkdwn requires these three characters to be HTML-escaped so user text
 # cannot forge links or entities inside a block.
@@ -36,6 +43,22 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
+
+
+def _truncate_escaped(text: str, limit: int) -> str:
+    """Truncate already-escaped mrkdwn without cutting an entity in half.
+
+    After escape_mrkdwn every "&" starts an entity ("&amp;", "&lt;", "&gt;"), so
+    a "&" with no ";" after it in the kept part is a broken entity to drop.
+    """
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 1]
+    amp = cut.rfind("&")
+    if amp != -1 and ";" not in cut[amp:]:
+        cut = cut[:amp]
+    return cut.rstrip() + "…"
 
 
 @dataclass
@@ -91,15 +114,17 @@ def build_support_thread_payload(event: SupportThreadEvent) -> dict:
 def build_reply_payload(author: str, text: str) -> dict:
     """Build the Slack payload mirroring one Discord message into a thread."""
     safe_author = escape_mrkdwn(_truncate(author, _MAX_TITLE_LEN)) or "unknown"
-    body = _truncate(text, _MAX_REPLY_LEN)
-    rendered = escape_mrkdwn(body) if body else "_(sin texto)_"
+    header = f"*{safe_author}*\n"
+    # Escaped once and used in both places: the fallback text is what Slack
+    # shows in notifications, so it must not carry <!channel> or forged links.
+    body = _truncate_escaped(escape_mrkdwn(text), min(_MAX_REPLY_LEN, _MAX_SECTION_LEN - len(header)))
 
     return {
-        "text": f"{safe_author}: {body or '(sin texto)'}",
+        "text": f"{safe_author}: {body}",
         "blocks": [
             {
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*{safe_author}*\n{rendered}"},
+                "text": {"type": "mrkdwn", "text": f"{header}{body}"},
             }
         ],
     }
@@ -216,11 +241,31 @@ class SlackApiClient:
         self._timeout = timeout if timeout is not None else float(settings.slack_http_timeout)
         self._client: httpx.AsyncClient | None = None
         self._lock = asyncio.Lock()
-        self._last_post = 0.0
+        self._last_post = float("-inf")
+        # Validated once, at startup, like the webhook URL: a half-configured
+        # token mode would otherwise fall back to the webhook without a word.
+        self._enabled = self._validate()
+
+    def _validate(self) -> bool:
+        if not self._token and not self._channel:
+            return False
+        if not self._token:
+            logger.error("SLACK_CHANNEL_ID is set but SLACK_BOT_TOKEN is empty; thread mirroring is disabled")
+            return False
+        if not self._token.startswith(_BOT_TOKEN_PREFIX):
+            logger.error(
+                "SLACK_BOT_TOKEN is not a bot token (must start with %s); thread mirroring is disabled",
+                _BOT_TOKEN_PREFIX,
+            )
+            return False
+        if not self._channel:
+            logger.error("SLACK_BOT_TOKEN is set but SLACK_CHANNEL_ID is empty; thread mirroring is disabled")
+            return False
+        return True
 
     @property
     def enabled(self) -> bool:
-        return bool(self._token and self._channel)
+        return self._enabled
 
     @property
     def channel(self) -> str:
@@ -244,13 +289,17 @@ class SlackApiClient:
             await asyncio.sleep(self._MIN_INTERVAL - elapsed)
         self._last_post = loop.time()
 
-    async def post(self, payload: dict, thread_ts: str | None = None) -> str | None:
-        """Post a message. Returns its ``ts``, or None when it was not delivered."""
+    async def post(self, payload: dict, thread_ts: str | None = None, channel: str | None = None) -> str | None:
+        """Post a message. Returns its ``ts``, or None when it was not delivered.
+
+        ``channel`` overrides the configured one: a reply must go to the channel
+        that holds its parent, even if SLACK_CHANNEL_ID changed since.
+        """
         if not self.enabled:
             logger.debug("Slack bot token or channel not configured, skipping")
             return None
 
-        body = {**payload, "channel": self._channel}
+        body = {**payload, "channel": channel or self._channel}
         if thread_ts:
             body["thread_ts"] = thread_ts
 
@@ -296,7 +345,7 @@ class SlackApiClient:
         """Announce a new Discord support thread. Returns the Slack ``ts``."""
         return await self.post(build_support_thread_payload(event))
 
-    async def reply_in_thread(self, thread_ts: str, author: str, text: str) -> bool:
+    async def reply_in_thread(self, thread_ts: str, author: str, text: str, channel: str | None = None) -> bool:
         """Mirror one Discord message as a reply under the announcement."""
-        ts = await self.post(build_reply_payload(author, text), thread_ts=thread_ts)
+        ts = await self.post(build_reply_payload(author, text), thread_ts=thread_ts, channel=channel)
         return ts is not None
