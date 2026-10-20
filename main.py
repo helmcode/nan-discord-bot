@@ -134,10 +134,20 @@ async def main() -> None:
                 await bot.llm._embed_client.close()
             except Exception:
                 pass
-        # Close Slack client
+        # Close Slack clients and the thread mapping
         if bot.slack:
             try:
                 await bot.slack.close()
+            except Exception:
+                pass
+        if bot.slack_api:
+            try:
+                await bot.slack_api.close()
+            except Exception:
+                pass
+        if bot.thread_map:
+            try:
+                bot.thread_map.close()
             except Exception:
                 pass
         # Stop health check server
