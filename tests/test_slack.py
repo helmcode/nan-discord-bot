@@ -103,7 +103,7 @@ async def test_notifier_posts_the_payload_to_the_webhook(monkeypatch):
         sent.append(__import__("json").loads(request.content))
         return httpx.Response(200, text="ok")
 
-    notifier = SlackNotifier(webhook_url="https://hooks.slack.test/services/T/B/X")
+    notifier = SlackNotifier(webhook_url="https://hooks.slack.com/services/T/B/X")
     notifier._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
     assert await notifier.notify_support_thread(EVENT) is True
@@ -120,7 +120,7 @@ async def test_notifier_does_not_retry_on_client_error():
         calls += 1
         return httpx.Response(404, text="no_service")
 
-    notifier = SlackNotifier(webhook_url="https://hooks.slack.test/services/T/B/X")
+    notifier = SlackNotifier(webhook_url="https://hooks.slack.com/services/T/B/X")
     notifier._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
     assert await notifier.notify_support_thread(EVENT) is False
@@ -139,7 +139,7 @@ async def test_notifier_retries_on_server_error_then_succeeds(monkeypatch):
             return httpx.Response(503)
         return httpx.Response(200, text="ok")
 
-    notifier = SlackNotifier(webhook_url="https://hooks.slack.test/services/T/B/X")
+    notifier = SlackNotifier(webhook_url="https://hooks.slack.com/services/T/B/X")
     notifier._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
     assert await notifier.notify_support_thread(EVENT) is True
@@ -156,7 +156,7 @@ async def test_notifier_gives_up_after_exhausting_retries(monkeypatch):
         calls += 1
         raise httpx.ConnectError("boom", request=request)
 
-    notifier = SlackNotifier(webhook_url="https://hooks.slack.test/services/T/B/X")
+    notifier = SlackNotifier(webhook_url="https://hooks.slack.com/services/T/B/X")
     notifier._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
     assert await notifier.notify_support_thread(EVENT) is False
@@ -186,3 +186,45 @@ def test_httpx_request_logging_cannot_leak_the_webhook_secret(caplog):
     import bot.config  # noqa: F401  (importing configures logging)
 
     assert logging.getLogger("httpx").level >= logging.WARNING
+
+
+# --- the URL must actually be an Incoming Webhook -------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://app.slack.com/client/T00000000/D00000000",  # a DM link, not a webhook
+        "https://slack.com/services/T/B/X",
+        "http://hooks.slack.com/services/T/B/X",  # no TLS
+        "https://hooks.slack.example/services/T/B/X",
+    ],
+)
+async def test_notifier_refuses_urls_that_are_not_incoming_webhooks(url):
+    notifier = SlackNotifier(webhook_url=url)
+    assert notifier.enabled is False
+    assert await notifier.notify_support_thread(EVENT) is False
+
+
+async def test_a_slack_client_url_answering_200_with_html_is_not_a_delivery():
+    """The Slack web app answers any POST with HTTP 200 and a page of HTML."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<!DOCTYPE html><html><head><title>Slack</title></head></html>")
+
+    notifier = SlackNotifier(webhook_url="https://hooks.slack.com/services/T/B/X")
+    notifier._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    assert await notifier.notify_support_thread(EVENT) is False
+    await notifier.close()
+
+
+async def test_ok_body_is_case_and_whitespace_insensitive():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="OK\n")
+
+    notifier = SlackNotifier(webhook_url="https://hooks.slack.com/services/T/B/X")
+    notifier._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    assert await notifier.notify_support_thread(EVENT) is True
+    await notifier.close()

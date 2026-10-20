@@ -10,6 +10,11 @@ import httpx
 from bot.config import logger, settings
 
 _BACKOFF_SECONDS = (0.5, 1.0, 2.0)
+
+# Only this prefix is an Incoming Webhook endpoint. A Slack client URL
+# (https://app.slack.com/client/...) answers a POST with the web app and HTTP
+# 200, which would otherwise read as a delivered message.
+_WEBHOOK_PREFIX = "https://hooks.slack.com/services/"
 _MAX_TITLE_LEN = 200
 _MAX_PREVIEW_LEN = 600
 
@@ -93,10 +98,24 @@ class SlackNotifier:
         self._webhook_url = (webhook_url if webhook_url is not None else settings.slack_webhook_url).strip()
         self._timeout = timeout if timeout is not None else float(settings.slack_http_timeout)
         self._client: httpx.AsyncClient | None = None
+        # Validated once, at startup, so a misconfigured URL is one loud error
+        # in the logs instead of one per notification.
+        self._enabled = self._validate_url()
+
+    def _validate_url(self) -> bool:
+        if not self._webhook_url:
+            return False
+        if not self._webhook_url.startswith(_WEBHOOK_PREFIX):
+            logger.error(
+                "SLACK_WEBHOOK_URL is not an Incoming Webhook (must start with %s); notifications are disabled",
+                _WEBHOOK_PREFIX,
+            )
+            return False
+        return True
 
     @property
     def enabled(self) -> bool:
-        return bool(self._webhook_url)
+        return self._enabled
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -124,7 +143,20 @@ class SlackNotifier:
                 last_error = type(e).__name__
             else:
                 if resp.status_code < 400:
-                    return True
+                    # An Incoming Webhook answers "ok". Anything else behind a
+                    # 2xx means the URL is not a webhook, so the message was
+                    # never delivered however healthy the status looks.
+                    body = resp.text.strip()
+                    if body.lower() == "ok":
+                        return True
+                    logger.error(
+                        "Slack returned HTTP %d but not an Incoming Webhook response (body starts with %r); "
+                        "check that SLACK_WEBHOOK_URL is a %s… URL",
+                        resp.status_code,
+                        body[:40],
+                        _WEBHOOK_PREFIX,
+                    )
+                    return False
                 # 4xx means a bad payload or a revoked webhook: retrying cannot help.
                 if resp.status_code < 500 and resp.status_code != 429:
                     logger.error("Slack webhook rejected the message (HTTP %d)", resp.status_code)
